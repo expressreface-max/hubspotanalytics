@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/sales-manager",
+      "schedule": "1 7 * * *"
+    },
+    {
+      "path": "/api/cron/open-quotes-scan",
+      "schedule": "20 7 * * *"
+    }
+  ]
+}

@@ -1,0 +1,576 @@
+"use client"
+
+import { Fragment, useMemo, useState } from "react"
+import { useQuery } from "@tanstack/react-query"
+import { Play, Download, X, MapPin, ChevronRight, ChevronDown } from "lucide-react"
+import { apiGet, apiPost, formatNumber } from "@/lib/api"
+import { PageHeader } from "@/components/page-header"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Label } from "@/components/ui/label"
+import { Skeleton } from "@/components/ui/skeleton"
+import { cn } from "@/lib/utils"
+
+type Status = { configured: boolean }
+
+type CrosstabRow = {
+  zip: string
+  territory: string
+  subRegion: string
+  counts: Record<string, number>
+  total: number
+}
+type CrosstabResponse = {
+  source: string
+  months: string[]
+  lookback: number
+  zips: string[]
+  zipTerritory: Record<string, string>
+  rows: CrosstabRow[]
+  columnTotals: Record<string, number>
+  grandTotal: number
+  matched: number
+  totalFetched: number
+}
+
+const LOOKBACKS = [
+  { key: 1, label: "1 month" },
+  { key: 3, label: "3 months" },
+  { key: 6, label: "6 months" },
+  { key: 12, label: "12 months" },
+  { key: 24, label: "24 months" },
+] as const
+
+function monthShort(m: string) {
+  const [y, mo] = m.split("-")
+  return new Date(Number(y), Number(mo) - 1, 1)
+    .toLocaleDateString("en-US", { month: "short", year: "2-digit" })
+    .replace(" ", " '")
+}
+
+function Pill({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "rounded-full border px-3 py-1 text-sm font-medium transition-colors",
+        active
+          ? "border-primary bg-primary text-primary-foreground"
+          : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+      )}
+    >
+      {children}
+    </button>
+  )
+}
+
+// Parse a free-form string into unique, valid 5-digit zips (first-seen order).
+function parseZips(raw: string): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const token of raw.split(/[\s,;]+/)) {
+    const m = token.trim().match(/^\d{5}/)
+    if (m && !seen.has(m[0])) {
+      seen.add(m[0])
+      out.push(m[0])
+    }
+  }
+  return out
+}
+
+export function CustomersView() {
+  const [zipText, setZipText] = useState("")
+  const [months, setMonths] = useState<number>(12)
+  // The applied query params (set when the user runs the report).
+  const [applied, setApplied] = useState<{ zips: string[]; months: number } | null>(null)
+
+  const status = useQuery({
+    queryKey: ["config-status"],
+    queryFn: () => apiGet<Status>("/api/hs/config/status"),
+  })
+  const connected = status.data?.configured
+
+  const parsedZips = useMemo(() => parseZips(zipText), [zipText])
+
+  const report = useQuery({
+    queryKey: ["customers-by-zip", applied?.zips, applied?.months],
+    queryFn: () => apiPost<CrosstabResponse>("/api/hs/customers-by-zip", applied),
+    enabled: !!connected && !!applied && applied.zips.length > 0,
+  })
+
+  const runReport = () => {
+    if (parsedZips.length === 0) return
+    setApplied({ zips: parsedZips, months })
+  }
+
+  const data = report.data
+
+  const exportCsv = () => {
+    if (!data) return
+    const header = ["ZIP", "Territory", ...data.months.map(monthShort), "Total"]
+    const lines = [header.join(",")]
+    for (const r of data.rows) {
+      lines.push(
+        [r.zip, `"${(r.territory || "").replace(/"/g, '""')}"`, ...data.months.map((m) => r.counts[m] ?? 0), r.total].join(
+          ",",
+        ),
+      )
+    }
+    lines.push(["Total", "", ...data.months.map((m) => data.columnTotals[m] ?? 0), data.grandTotal].join(","))
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `customers-by-zip-${data.lookback}mo.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <PageHeader
+        title="Customers"
+        description="Closed-won deals per ZIP code by close date · HubSpot crosstab"
+      />
+
+      {/* Controls: ZIP prompt + lookback */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Report settings</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="zip-input">ZIP codes to include</Label>
+            <textarea
+              id="zip-input"
+              value={zipText}
+              onChange={(e) => setZipText(e.target.value)}
+              placeholder="Enter 5-digit ZIPs separated by commas, spaces, or new lines&#10;e.g. 95660, 95821, 95608"
+              rows={3}
+              className={cn(
+                "min-h-20 w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm outline-none",
+                "placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring",
+              )}
+            />
+            {parsedZips.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                <span className="text-xs text-muted-foreground">
+                  {parsedZips.length} ZIP{parsedZips.length === 1 ? "" : "s"}:
+                </span>
+                {parsedZips.map((z) => (
+                  <span
+                    key={z}
+                    className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium tabular-nums"
+                  >
+                    <MapPin className="size-3 text-muted-foreground" />
+                    {z}
+                  </span>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setZipText("")}
+                  className="inline-flex items-center gap-0.5 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  <X className="size-3" />
+                  Clear
+                </button>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">Multiple ZIPs supported. Invalid entries are ignored.</p>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label>Lookback</Label>
+            <div className="flex flex-wrap items-center gap-2">
+              {LOOKBACKS.map((l) => (
+                <Pill key={l.key} active={months === l.key} onClick={() => setMonths(l.key)}>
+                  {l.label}
+                </Pill>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button onClick={runReport} disabled={parsedZips.length === 0 || report.isFetching} className="gap-1.5">
+              <Play className="size-4" />
+              {report.isFetching ? "Running…" : "Run report"}
+            </Button>
+            {data ? (
+              <Button variant="outline" onClick={exportCsv} className="gap-1.5 bg-transparent">
+                <Download className="size-4" />
+                Export CSV
+              </Button>
+            ) : null}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Results */}
+      {!connected ? (
+        <Card>
+          <CardContent className="py-10 text-center text-sm text-muted-foreground">
+            Connect HubSpot in Settings to run this report.
+          </CardContent>
+        </Card>
+      ) : report.isError ? (
+        <Card>
+          <CardContent className="py-10 text-center text-sm text-destructive">
+            {(report.error as Error)?.message || "Failed to load customers."}
+          </CardContent>
+        </Card>
+      ) : !applied ? (
+        <Card>
+          <CardContent className="py-10 text-center text-sm text-muted-foreground">
+            Enter ZIP codes and a lookback window, then run the report.
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardHeader className="flex-row items-center justify-between gap-3 pb-3">
+            <CardTitle className="text-base">
+              Closed-won deals by ZIP · trailing {applied.months} month{applied.months === 1 ? "" : "s"}
+            </CardTitle>
+            {data ? (
+              <span className="text-sm text-muted-foreground">{formatNumber(data.grandTotal)} customers</span>
+            ) : null}
+          </CardHeader>
+          <CardContent>
+            {report.isFetching || !data ? (
+              <div className="space-y-2">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <Skeleton key={i} className="h-7 w-full" />
+                ))}
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="sticky left-0 z-10 bg-card py-2 pr-3 text-left font-medium">ZIP</th>
+                      <th className="py-2 pr-3 text-left font-medium">Territory</th>
+                      {data.months.map((m) => (
+                        <th key={m} className="px-2 py-2 text-right font-medium tabular-nums text-muted-foreground">
+                          {monthShort(m)}
+                        </th>
+                      ))}
+                      <th className="px-2 py-2 text-right font-semibold">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.rows.map((r) => (
+                      <tr key={r.zip} className="border-b border-border/50">
+                        <td className="sticky left-0 z-10 bg-card py-1.5 pr-3 font-medium tabular-nums">{r.zip}</td>
+                        <td
+                          className={cn(
+                            "py-1.5 pr-3 text-left",
+                            r.territory ? "" : "text-muted-foreground/40",
+                          )}
+                        >
+                          {r.territory || "–"}
+                        </td>
+                        {data.months.map((m) => {
+                          const v = r.counts[m] ?? 0
+                          return (
+                            <td
+                              key={m}
+                              className={cn(
+                                "px-2 py-1.5 text-right tabular-nums",
+                                v === 0 ? "text-muted-foreground/40" : "",
+                              )}
+                            >
+                              {v === 0 ? "–" : formatNumber(v)}
+                            </td>
+                          )
+                        })}
+                        <td className="px-2 py-1.5 text-right font-semibold tabular-nums">{formatNumber(r.total)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t-2 font-semibold">
+                      <td className="sticky left-0 z-10 bg-card py-2 pr-3">Total</td>
+                      <td className="py-2 pr-3" />
+                      {data.months.map((m) => (
+                        <td key={m} className="px-2 py-2 text-right tabular-nums">
+                          {formatNumber(data.columnTotals[m] ?? 0)}
+                        </td>
+                      ))}
+                      <td className="px-2 py-2 text-right tabular-nums">{formatNumber(data.grandTotal)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Hierarchical breakdown: sub-region -> territory -> zip by month */}
+      {connected && applied && !report.isError ? (
+        <SubRegionCard data={data} loading={report.isFetching || !data} lookback={applied.months} />
+      ) : null}
+
+      {/* All customers (no ZIP filter) — separate, always-on section */}
+      {connected ? <AllCustomersSection /> : null}
+    </div>
+  )
+}
+
+// Separate section that runs the sub-region -> territory -> ZIP hierarchy over
+// ALL closed-won deals (no ZIP filter), with its own lookback control.
+function AllCustomersSection() {
+  const [months, setMonths] = useState<number>(12)
+
+  const report = useQuery({
+    queryKey: ["customers-all", months],
+    queryFn: () => apiPost<CrosstabResponse>("/api/hs/customers-all", { months }),
+  })
+  const data = report.data
+
+  return (
+    <div className="flex flex-col gap-4 border-t pt-6">
+      <div className="flex flex-col gap-1">
+        <h2 className="text-lg font-semibold">All customers by sub-region &amp; territory</h2>
+        <p className="text-sm text-muted-foreground">
+          Every closed-won deal across all territories, grouped by sub-region, then territory, then ZIP. Not limited to
+          the ZIPs above.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <Label>Lookback</Label>
+        <div className="flex flex-wrap items-center gap-2">
+          {LOOKBACKS.map((l) => (
+            <Pill key={l.key} active={months === l.key} onClick={() => setMonths(l.key)}>
+              {l.label}
+            </Pill>
+          ))}
+        </div>
+      </div>
+
+      {report.isError ? (
+        <Card>
+          <CardContent className="py-10 text-center text-sm text-destructive">
+            {(report.error as Error)?.message || "Failed to load customers."}
+          </CardContent>
+        </Card>
+      ) : (
+        <SubRegionCard
+          data={data}
+          loading={report.isFetching || !data}
+          lookback={months}
+          title="All customers"
+        />
+      )}
+    </div>
+  )
+}
+
+const UNASSIGNED = "Unassigned"
+
+type TerritoryGroup = {
+  territory: string
+  rows: CrosstabRow[]
+  counts: Record<string, number>
+  total: number
+}
+type SubRegionGroup = {
+  subRegion: string
+  territories: TerritoryGroup[]
+  counts: Record<string, number>
+  total: number
+}
+
+function buildHierarchy(rows: CrosstabRow[], months: string[]): SubRegionGroup[] {
+  const emptyCounts = () => Object.fromEntries(months.map((m) => [m, 0])) as Record<string, number>
+
+  const subMap = new Map<string, Map<string, CrosstabRow[]>>()
+  for (const r of rows) {
+    const sub = r.subRegion || UNASSIGNED
+    const terr = r.territory || UNASSIGNED
+    let terrMap = subMap.get(sub)
+    if (!terrMap) {
+      terrMap = new Map()
+      subMap.set(sub, terrMap)
+    }
+    const list = terrMap.get(terr)
+    if (list) list.push(r)
+    else terrMap.set(terr, [r])
+  }
+
+  const sumInto = (target: Record<string, number>, r: CrosstabRow) => {
+    for (const m of months) target[m] += r.counts[m] ?? 0
+  }
+
+  const subGroups: SubRegionGroup[] = []
+  for (const [subRegion, terrMap] of subMap) {
+    const subCounts = emptyCounts()
+    let subTotal = 0
+    const territories: TerritoryGroup[] = []
+    for (const [territory, tRows] of terrMap) {
+      const tCounts = emptyCounts()
+      let tTotal = 0
+      const sorted = [...tRows].sort((a, b) => b.total - a.total)
+      for (const r of sorted) {
+        sumInto(tCounts, r)
+        sumInto(subCounts, r)
+        tTotal += r.total
+        subTotal += r.total
+      }
+      territories.push({ territory, rows: sorted, counts: tCounts, total: tTotal })
+    }
+    territories.sort((a, b) => b.total - a.total)
+    subGroups.push({ subRegion, territories, counts: subCounts, total: subTotal })
+  }
+  subGroups.sort((a, b) => b.total - a.total)
+  return subGroups
+}
+
+function SubRegionCard({
+  data,
+  loading,
+  lookback,
+  title = "Customers",
+}: {
+  data: CrosstabResponse | undefined
+  loading: boolean
+  lookback: number
+  title?: string
+}) {
+  // Default collapsed: empty set means no sub-region is expanded.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const groups = useMemo(() => (data ? buildHierarchy(data.rows, data.months) : []), [data])
+
+  const toggle = (sub: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(sub)) next.delete(sub)
+      else next.add(sub)
+      return next
+    })
+
+  const months = data?.months ?? []
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">
+          {title} by sub-region &amp; territory · trailing {lookback} month{lookback === 1 ? "" : "s"}
+        </CardTitle>
+        <p className="text-sm text-muted-foreground">
+          Closed-won deals grouped by sub-region, then territory, then ZIP. Click a sub-region to expand.
+        </p>
+      </CardHeader>
+      <CardContent>
+        {loading || !data ? (
+          <div className="space-y-2">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-7 w-full" />
+            ))}
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-sm">
+              <thead>
+                <tr className="border-b">
+                  <th className="sticky left-0 z-10 min-w-52 bg-card py-2 pr-3 text-left font-medium">
+                    Sub-region / Territory / ZIP
+                  </th>
+                  {months.map((m) => (
+                    <th key={m} className="px-2 py-2 text-right font-medium tabular-nums text-muted-foreground">
+                      {monthShort(m)}
+                    </th>
+                  ))}
+                  <th className="px-2 py-2 text-right font-semibold">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groups.map((g) => {
+                  const isCollapsed = !expanded.has(g.subRegion)
+                  return (
+                    <Fragment key={g.subRegion}>
+                      {/* Sub-region row */}
+                      <tr
+                        className="cursor-pointer border-b bg-muted/60 font-semibold hover:bg-muted"
+                        onClick={() => toggle(g.subRegion)}
+                      >
+                        <td className="sticky left-0 z-10 bg-muted/60 py-2 pr-3">
+                          <span className="inline-flex items-center gap-1">
+                            {isCollapsed ? (
+                              <ChevronRight className="size-3.5 text-muted-foreground" />
+                            ) : (
+                              <ChevronDown className="size-3.5 text-muted-foreground" />
+                            )}
+                            {g.subRegion}
+                          </span>
+                        </td>
+                        {months.map((m) => (
+                          <td key={m} className="px-2 py-2 text-right tabular-nums">
+                            {g.counts[m] ? formatNumber(g.counts[m]) : "–"}
+                          </td>
+                        ))}
+                        <td className="px-2 py-2 text-right tabular-nums">{formatNumber(g.total)}</td>
+                      </tr>
+
+                      {!isCollapsed &&
+                        g.territories.map((t) => (
+                          <Fragment key={`${g.subRegion}|${t.territory}`}>
+                            {/* Territory sub-header row */}
+                            <tr className="border-b border-border/60 bg-muted/20 font-medium">
+                              <td className="sticky left-0 z-10 bg-muted/20 py-1.5 pl-6 pr-3">{t.territory}</td>
+                              {months.map((m) => (
+                                <td key={m} className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">
+                                  {t.counts[m] ? formatNumber(t.counts[m]) : "–"}
+                                </td>
+                              ))}
+                              <td className="px-2 py-1.5 text-right tabular-nums">{formatNumber(t.total)}</td>
+                            </tr>
+                            {/* ZIP rows */}
+                            {t.rows.map((r) => (
+                              <tr key={`${g.subRegion}|${t.territory}|${r.zip}`} className="border-b border-border/40">
+                                <td className="sticky left-0 z-10 bg-card py-1.5 pl-10 pr-3 tabular-nums">{r.zip}</td>
+                                {months.map((m) => {
+                                  const v = r.counts[m] ?? 0
+                                  return (
+                                    <td
+                                      key={m}
+                                      className={cn(
+                                        "px-2 py-1.5 text-right tabular-nums",
+                                        v === 0 ? "text-muted-foreground/40" : "",
+                                      )}
+                                    >
+                                      {v === 0 ? "–" : formatNumber(v)}
+                                    </td>
+                                  )
+                                })}
+                                <td className="px-2 py-1.5 text-right font-semibold tabular-nums">
+                                  {formatNumber(r.total)}
+                                </td>
+                              </tr>
+                            ))}
+                          </Fragment>
+                        ))}
+                    </Fragment>
+                  )
+                })}
+              </tbody>
+              <tfoot>
+                <tr className="border-t-2 font-semibold">
+                  <td className="sticky left-0 z-10 bg-card py-2 pr-3">Total</td>
+                  {months.map((m) => (
+                    <td key={m} className="px-2 py-2 text-right tabular-nums">
+                      {formatNumber(data.columnTotals[m] ?? 0)}
+                    </td>
+                  ))}
+                  <td className="px-2 py-2 text-right tabular-nums">{formatNumber(data.grandTotal)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}

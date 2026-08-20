@@ -1,11 +1,20 @@
 "use client"
 
-import { Loader2 } from "lucide-react"
+import React, { useState } from "react"
+import { ChevronDown, ChevronRight, Loader2 } from "lucide-react"
 import { formatNumber } from "@/lib/api"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
 type WeekKey = "lastWeek" | "thisWeek" | "nextWeek" | "future"
-type WeekBucket = { total: number; byType: Record<string, number> }
+type MeetingDetail = {
+  id: string
+  title: string
+  startTime: string
+  type: string
+  outcome: string | null
+  location: string | null
+}
+type WeekBucket = { total: number; byType: Record<string, number>; meetings: MeetingDetail[] }
 type RepRow = { rep: string; total: number; weeks: Record<WeekKey, WeekBucket> }
 export type MeetingsResponse = {
   configured: boolean
@@ -24,6 +33,52 @@ function weekRangeLabel(from: string, to: string): string {
   const t = new Date(to)
   const opt: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" }
   return `${f.toLocaleDateString(undefined, opt)} – ${t.toLocaleDateString(undefined, opt)}`
+}
+
+function meetingTimeLabel(iso: string): string {
+  const d = new Date(iso)
+  return d.toLocaleString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  })
+}
+
+// Expanded detail panel: the raw list of meetings behind a rep's "This week"
+// count, so the number on the matrix can always be traced back to specifics.
+function RepMeetingsDetail({ rep, bucket }: { rep: string; bucket: WeekBucket | undefined }) {
+  const meetings = bucket?.meetings ?? []
+  if (meetings.length === 0) {
+    return (
+      <div className="px-4 py-4 text-sm text-muted-foreground">No meetings for {rep} this week.</div>
+    )
+  }
+  return (
+    <div className="px-4 py-3">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-xs text-muted-foreground">
+            <th className="py-1 pr-3 text-left font-medium">Date / time</th>
+            <th className="py-1 pr-3 text-left font-medium">Meeting</th>
+            <th className="py-1 pr-3 text-left font-medium">Type</th>
+            <th className="py-1 pr-3 text-left font-medium">Outcome</th>
+          </tr>
+        </thead>
+        <tbody>
+          {meetings.map((m) => (
+            <tr key={m.id} className="border-t border-border/60">
+              <td className="py-1.5 pr-3 whitespace-nowrap tabular-nums">{meetingTimeLabel(m.startTime)}</td>
+              <td className="py-1.5 pr-3">{m.title}</td>
+              <td className="py-1.5 pr-3 text-muted-foreground">{m.type}</td>
+              <td className="py-1.5 pr-3 text-muted-foreground">{m.outcome ?? "–"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
 // A single cell: total meetings (bold) with a per-type breakdown beneath.
@@ -53,6 +108,7 @@ export function MeetingsWeeksSection({
 }) {
   const weeks = data?.weeks ?? WEEK_ORDER.map((key) => ({ key, label: "", from: "", to: "" }))
   const types = data?.types ?? []
+  const [expandedRep, setExpandedRep] = useState<string | null>(null)
 
   return (
     <Card>
@@ -109,17 +165,45 @@ export function MeetingsWeeksSection({
                     </tr>
                   ))
                 ) : data && data.byRep.length > 0 ? (
-                  data.byRep.map((row) => (
-                    <tr key={row.rep} className="border-b last:border-0 align-top">
-                      <td className="sticky left-0 z-10 bg-card px-4 py-3 font-medium">{row.rep}</td>
-                      {WEEK_ORDER.map((k) => (
-                        <td key={k} className="px-4 py-3 text-right">
-                          <MeetingCell bucket={row.weeks[k]} types={types} />
-                        </td>
-                      ))}
-                      <td className="px-4 py-3 text-right font-semibold tabular-nums">{formatNumber(row.total)}</td>
-                    </tr>
-                  ))
+                  data.byRep.map((row) => {
+                    const isOpen = expandedRep === row.rep
+                    return (
+                      <React.Fragment key={row.rep}>
+                        <tr
+                          className="border-b last:border-0 align-top cursor-pointer hover:bg-muted/40"
+                          onClick={() => setExpandedRep(isOpen ? null : row.rep)}
+                          aria-expanded={isOpen}
+                        >
+                          <td className="sticky left-0 z-10 bg-card px-4 py-3 font-medium">
+                            <span className="flex items-center gap-1.5">
+                              {isOpen ? (
+                                <ChevronDown className="size-3.5 text-muted-foreground" aria-hidden="true" />
+                              ) : (
+                                <ChevronRight className="size-3.5 text-muted-foreground" aria-hidden="true" />
+                              )}
+                              {row.rep}
+                            </span>
+                          </td>
+                          {WEEK_ORDER.map((k) => (
+                            <td key={k} className="px-4 py-3 text-right">
+                              <MeetingCell bucket={row.weeks[k]} types={types} />
+                            </td>
+                          ))}
+                          <td className="px-4 py-3 text-right font-semibold tabular-nums">{formatNumber(row.total)}</td>
+                        </tr>
+                        {isOpen && (
+                          <tr className="border-b last:border-0 bg-muted/20">
+                            <td colSpan={WEEK_ORDER.length + 2} className="p-0">
+                              <div className="px-4 pt-2 text-xs font-medium text-muted-foreground">
+                                This week's meetings for {row.rep} ({row.weeks.thisWeek?.total ?? 0})
+                              </div>
+                              <RepMeetingsDetail rep={row.rep} bucket={row.weeks.thisWeek} />
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    )
+                  })
                 ) : (
                   <tr>
                     <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">

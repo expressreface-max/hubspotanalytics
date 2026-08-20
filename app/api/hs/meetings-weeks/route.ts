@@ -12,14 +12,26 @@ type MeetingRecord = {
     hubspot_owner_id?: string | null
     hs_activity_type?: string | null
     hs_attendee_owner_ids?: string | null
+    hs_meeting_title?: string | null
+    hs_meeting_outcome?: string | null
+    hs_meeting_location?: string | null
   }
 }
 
 type WeekKey = "lastWeek" | "thisWeek" | "nextWeek" | "future"
-type WeekBucket = { total: number; byType: Record<string, number> }
+type MeetingDetail = {
+  id: string
+  title: string
+  startTime: string
+  type: string
+  outcome: string | null
+  location: string | null
+}
+type WeekBucket = { total: number; byType: Record<string, number>; meetings: MeetingDetail[] }
 type RepRow = { rep: string; total: number; weeks: Record<WeekKey, WeekBucket> }
 
 const UNSPECIFIED_TYPE = "Unspecified"
+const WEEK_ORDER: WeekKey[] = ["lastWeek", "thisWeek", "nextWeek", "future"]
 
 function toMs(v: string | null | undefined): number | null {
   if (!v) return null
@@ -37,7 +49,7 @@ function parseAttendeeOwnerIds(v: string | null | undefined): string[] {
 }
 
 function emptyBucket(): WeekBucket {
-  return { total: 0, byType: {} }
+  return { total: 0, byType: {}, meetings: [] }
 }
 
 // Paginate meetings whose actual start time falls in [fromMs, toMsHigh].
@@ -66,6 +78,9 @@ async function searchMeetingsInRange(token: string, fromMs: number, toMsHigh: nu
         "hubspot_owner_id",
         "hs_activity_type",
         "hs_attendee_owner_ids",
+        "hs_meeting_title",
+        "hs_meeting_outcome",
+        "hs_meeting_location",
       ],
       limit: 100,
       sorts: [{ propertyName: "hs_meeting_start_time", direction: "ASCENDING" }],
@@ -174,12 +189,23 @@ export async function GET() {
         }
         repMap.set(rep, row)
       }
+      const detail: MeetingDetail = {
+        id: m.id,
+        title: (m.properties.hs_meeting_title || "").trim() || "(untitled meeting)",
+        startTime: new Date(t).toISOString(),
+        type,
+        outcome: m.properties.hs_meeting_outcome || null,
+        location: m.properties.hs_meeting_location || null,
+      }
+
       row.total += 1
       row.weeks[wk].total += 1
       row.weeks[wk].byType[type] = (row.weeks[wk].byType[type] || 0) + 1
+      row.weeks[wk].meetings.push(detail)
 
       weekTotals[wk].total += 1
       weekTotals[wk].byType[type] = (weekTotals[wk].byType[type] || 0) + 1
+      weekTotals[wk].meetings.push(detail)
       typeTotals.set(type, (typeTotals.get(type) || 0) + 1)
     }
 
@@ -190,6 +216,12 @@ export async function GET() {
         return b[1] - a[1] || a[0].localeCompare(b[0])
       })
       .map(([t]) => t)
+
+    for (const row of repMap.values()) {
+      for (const wk of WEEK_ORDER) {
+        row.weeks[wk].meetings.sort((a, b) => a.startTime.localeCompare(b.startTime))
+      }
+    }
 
     const byRep = [...repMap.values()].sort((a, b) => b.total - a.total || a.rep.localeCompare(b.rep))
     const grandTotal =

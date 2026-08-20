@@ -1,9 +1,8 @@
 "use client"
 
-import { ArrowUpRight, ArrowDownRight } from "lucide-react"
+import { ArrowUpRight, ArrowDownRight, Loader2 } from "lucide-react"
 import { formatCurrency, formatNumber } from "@/lib/api"
 import { Card } from "@/components/ui/card"
-import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
 
 // Shared funnel metrics + KPI card components, used by both the Funnel
@@ -74,7 +73,9 @@ function KpiColumn({
         </div>
       ) : null}
       {loading ? (
-        <Skeleton className="mt-1 h-7 w-20" />
+        <div className="mt-1 flex h-7 items-center">
+          <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="Loading" />
+        </div>
       ) : (
         <div className={cn("num mt-0.5 text-2xl font-bold", muted && "text-muted-foreground")}>{value}</div>
       )}
@@ -116,7 +117,9 @@ export function FunnelKpi({
       <Card className="p-5">
         <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
         {loading ? (
-          <Skeleton className="mt-2 h-8 w-24" />
+          <div className="mt-2 flex h-8 items-center">
+            <Loader2 className="size-5 animate-spin text-muted-foreground" aria-label="Loading" />
+          </div>
         ) : (
           <div className="num mt-1 text-3xl font-bold">{value}</div>
         )}

@@ -1,7 +1,7 @@
 "use client"
 
 import { useQuery } from "@tanstack/react-query"
-import { RefreshCw, AlertTriangle, Download, FileText } from "lucide-react"
+import { RefreshCw, AlertTriangle, Download, FileText, Loader2 } from "lucide-react"
 import { apiPost, formatCurrency, formatNumber } from "@/lib/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -79,7 +79,7 @@ export function ErContractDealsSection({ configured }: { configured: boolean }) 
   const rows = report.data?.rows ?? []
   const totals = report.data?.totals
   const mismatchCount = report.data?.mismatchCount ?? 0
-  const loading = report.isLoading
+  const loading = report.isFetching || !report.data
 
   function exportCsv() {
     const header = [
@@ -132,7 +132,10 @@ export function ErContractDealsSection({ configured }: { configured: boolean }) 
     <Card>
       <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <CardTitle className="text-base">Express Reface deals — cabinet, countertop &amp; contract</CardTitle>
+          <CardTitle className="flex items-center gap-2 text-base">
+            Express Reface deals — cabinet, countertop &amp; contract
+            {report.isFetching && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
+          </CardTitle>
           <p className="mt-1 text-sm text-muted-foreground">
             Closed-won Express Reface deals over the last 12 months, comparing product amounts to the deal &amp;
             contract price
@@ -174,6 +177,10 @@ export function ErContractDealsSection({ configured }: { configured: boolean }) 
           </div>
         ) : loading ? (
           <div className="space-y-2">
+            <div className="flex items-center gap-2 pb-1 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" aria-label="Loading" />
+              Loading contract deals…
+            </div>
             {Array.from({ length: 8 }).map((_, i) => (
               <Skeleton key={i} className="h-7 w-full" />
             ))}

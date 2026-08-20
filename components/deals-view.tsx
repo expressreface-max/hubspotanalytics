@@ -125,7 +125,10 @@ export function DealsView() {
         <CardHeader className="gap-4">
           <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
             <div className="flex flex-col gap-1.5">
-              <CardTitle className="text-base">All deals</CardTitle>
+              <CardTitle className="flex items-center gap-2 text-base">
+                All deals
+                {deals.isFetching && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
+              </CardTitle>
               <p className="text-sm text-muted-foreground">
                 {deals.isLoading
                   ? "Loading deals..."

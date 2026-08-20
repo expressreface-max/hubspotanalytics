@@ -1,6 +1,5 @@
-import type { LucideIcon } from "lucide-react"
+import { Loader2, type LucideIcon } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
-import { Skeleton } from "@/components/ui/skeleton"
 
 export function KpiCard({
   label,
@@ -23,7 +22,9 @@ export function KpiCard({
             {label}
           </span>
           {loading ? (
-            <Skeleton className="h-7 w-24" />
+            <span className="flex h-7 items-center">
+              <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="Loading" />
+            </span>
           ) : (
             <span className="num animate-count text-2xl font-bold">{value}</span>
           )}

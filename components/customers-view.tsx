@@ -2,7 +2,7 @@
 
 import { Fragment, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Play, Download, X, MapPin, ChevronRight, ChevronDown } from "lucide-react"
+import { Play, Download, X, MapPin, ChevronRight, ChevronDown, Loader2 } from "lucide-react"
 import { apiGet, apiPost, formatNumber } from "@/lib/api"
 import { PageHeader } from "@/components/page-header"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -194,7 +194,7 @@ export function CustomersView() {
 
           <div className="flex items-center gap-2">
             <Button onClick={runReport} disabled={parsedZips.length === 0 || report.isFetching} className="gap-1.5">
-              <Play className="size-4" />
+              {report.isFetching ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
               {report.isFetching ? "Running…" : "Run report"}
             </Button>
             {data ? (
@@ -229,8 +229,9 @@ export function CustomersView() {
       ) : (
         <Card>
           <CardHeader className="flex-row items-center justify-between gap-3 pb-3">
-            <CardTitle className="text-base">
+            <CardTitle className="flex items-center gap-2 text-base">
               Closed-won deals by ZIP · trailing {applied.months} month{applied.months === 1 ? "" : "s"}
+              {report.isFetching && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
             </CardTitle>
             {data ? (
               <span className="text-sm text-muted-foreground">{formatNumber(data.grandTotal)} customers</span>
@@ -456,8 +457,9 @@ function SubRegionCard({
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base">
+        <CardTitle className="flex items-center gap-2 text-base">
           {title} by sub-region &amp; territory · trailing {lookback} month{lookback === 1 ? "" : "s"}
+          {loading && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
         </CardTitle>
         <p className="text-sm text-muted-foreground">
           Closed-won deals grouped by sub-region, then territory, then ZIP. Click a sub-region to expand.

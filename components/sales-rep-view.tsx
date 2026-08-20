@@ -405,13 +405,15 @@ export function SalesRepView() {
       {/* Deal detail */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-3 pb-3">
-          <CardTitle className="text-base">
+          <CardTitle className="flex items-center gap-2 text-base">
             Deal detail
             {!loading ? (
-              <span className="ml-2 text-sm font-normal text-muted-foreground">
+              <span className="text-sm font-normal text-muted-foreground">
                 {sortedDeals.length} deals · sorted by appointment date (newest first)
               </span>
-            ) : null}
+            ) : (
+              <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />
+            )}
           </CardTitle>
           <Button
             variant="outline"
@@ -609,13 +611,15 @@ function TerritoryBreakdown({ deals, loading }: { deals: DealDetail[]; loading?:
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base">
+        <CardTitle className="flex items-center gap-2 text-base">
           By territory
           {!loading ? (
-            <span className="ml-2 text-sm font-normal text-muted-foreground">
+            <span className="text-sm font-normal text-muted-foreground">
               region › sub-region › territory · same period &amp; rep
             </span>
-          ) : null}
+          ) : (
+            <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />
+          )}
         </CardTitle>
       </CardHeader>
       <CardContent>

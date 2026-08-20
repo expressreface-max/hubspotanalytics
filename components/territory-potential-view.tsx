@@ -2,7 +2,7 @@
 
 import { Fragment as FragmentRow, useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { TrendingUp, TrendingDown, Target, MapPinned, ChevronRight, Crosshair, X } from "lucide-react"
+import { TrendingUp, TrendingDown, Target, MapPinned, ChevronRight, Crosshair, X, Loader2 } from "lucide-react"
 import { apiGet, apiPost, formatCurrency, formatNumber } from "@/lib/api"
 import { PageHeader } from "@/components/page-header"
 import { NotConnected } from "@/components/not-connected"
@@ -311,7 +311,9 @@ export function TerritoryPotentialView() {
               <Target className="size-3.5" /> Jobs attainment
             </div>
             {loading ? (
-              <Skeleton className="mt-2 h-8 w-24" />
+              <div className="mt-2 flex h-8 items-center">
+                <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="Loading" />
+              </div>
             ) : (
               <>
                 <div className="mt-1 num text-2xl font-bold">{fmtPct(totals?.jobsAtt ?? 0)}</div>
@@ -326,7 +328,9 @@ export function TerritoryPotentialView() {
           <CardContent className="pt-6">
             <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Actual revenue</div>
             {loading ? (
-              <Skeleton className="mt-2 h-8 w-28" />
+              <div className="mt-2 flex h-8 items-center">
+                <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="Loading" />
+              </div>
             ) : (
               <>
                 <div className="mt-1 num text-2xl font-bold">{formatCurrency(totals?.actRev ?? 0)}</div>
@@ -343,7 +347,9 @@ export function TerritoryPotentialView() {
               <TrendingUp className="size-3.5 text-chart-3" /> Over / under
             </div>
             {loading ? (
-              <Skeleton className="mt-2 h-8 w-20" />
+              <div className="mt-2 flex h-8 items-center">
+                <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="Loading" />
+              </div>
             ) : (
               <>
                 <div className="mt-1 flex items-baseline gap-2 num text-2xl font-bold">
@@ -369,7 +375,9 @@ export function TerritoryPotentialView() {
                 ) : null}
               </div>
               {loading ? (
-                <Skeleton className="mt-2 h-8 w-28" />
+                <div className="mt-2 flex h-8 items-center">
+                  <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="Loading" />
+                </div>
               ) : (
                 <>
                   <div className="mt-1 num text-2xl font-bold">{formatCurrency(revScope.revOpp)}</div>

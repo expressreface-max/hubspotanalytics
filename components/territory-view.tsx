@@ -1,8 +1,8 @@
 "use client"
 
-  import { Fragment, useMemo, useState } from "react"
+import { Fragment, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { ChevronRight, RefreshCw, AlertTriangle, Download, Search, Globe, Layers, Sparkles } from "lucide-react"
+import { ChevronRight, RefreshCw, AlertTriangle, Download, Search, Globe, Layers, Sparkles, Loader2 } from "lucide-react"
 import { DealAnalysisDialog } from "@/components/deal-analysis-dialog"
 import { apiGet, apiPost, formatCurrency, formatNumber } from "@/lib/api"
 import { resolveRange, RANGE_OPTIONS, defaultCustomRange, type RangeKey, type CustomRange } from "@/lib/date-ranges"
@@ -240,9 +240,10 @@ function RevenueSplitCard({
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base">
+        <CardTitle className="flex items-center gap-2 text-base">
           Won revenue split
-          <span className="ml-2 text-sm font-normal text-muted-foreground">cabinet vs countertops · {periodText}</span>
+          <span className="text-sm font-normal text-muted-foreground">cabinet vs countertops · {periodText}</span>
+          {loading && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -369,7 +370,10 @@ function TopPanel({
   return (
     <Card>
       <CardHeader className="gap-3 pb-3">
-        <CardTitle className="text-base">{title}</CardTitle>
+        <CardTitle className="flex items-center gap-2 text-base">
+          {title}
+          {loading && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
+        </CardTitle>
         <Tabs value={metric} onValueChange={(v) => setMetric((v as PanelMetricKey) ?? "revenue")}>
           <TabsList className="w-full">
             {PANEL_METRICS.map((m) => (
@@ -426,7 +430,10 @@ function PenetrationCard({
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base">Territory Penetration — {rangeLabel}</CardTitle>
+        <CardTitle className="flex items-center gap-2 text-base">
+          Territory Penetration — {rangeLabel}
+          {loading && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
+        </CardTitle>
         <p className="text-sm text-muted-foreground">Jobs won ÷ owner-occupied HH · ranked by penetration %</p>
       </CardHeader>
       <CardContent>
@@ -672,7 +679,10 @@ function SalesRepCard({ rows, loading }: { rows: RepRow[]; loading?: boolean }) 
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base">By Sales Rep</CardTitle>
+        <CardTitle className="flex items-center gap-2 text-base">
+          By Sales Rep
+          {loading && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
+        </CardTitle>
         <p className="text-sm text-muted-foreground">
           Appointments, quoted, closed won, won/quoted %, close %, revenue &amp; avg sale by HubSpot deal owner · tap a
           column to rank · tap a rep to see their deals

@@ -1,7 +1,7 @@
 "use client"
 
 import { useQuery } from "@tanstack/react-query"
-import { TrendingUp, Clock, CalendarDays } from "lucide-react"
+import { TrendingUp, Clock, CalendarDays, Loader2 } from "lucide-react"
 import { apiGet, apiPost, formatCurrency, formatNumber } from "@/lib/api"
 import { PageHeader } from "@/components/page-header"
 import { NotConnected } from "@/components/not-connected"
@@ -161,16 +161,21 @@ export function QuotesView() {
       {/* ---- Section 1: Open quote pipeline by age ---- */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">
+          <CardTitle className="flex items-center gap-2 text-base">
             Open quote pipeline by age
-            <span className="ml-2 text-sm font-normal text-muted-foreground">
+            <span className="text-sm font-normal text-muted-foreground">
               deals currently in the Quoted stage, by days since quoted
             </span>
+            {report.isFetching && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
           </CardTitle>
         </CardHeader>
         <CardContent>
           {loading ? (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="col-span-full flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" aria-label="Loading" />
+                Loading quote pipeline…
+              </div>
               {[0, 1, 2, 3].map((i) => (
                 <Skeleton key={i} className="h-40 w-full" />
               ))}
@@ -290,9 +295,10 @@ export function QuotesView() {
       {/* ---- Section 2: Conversion model ---- */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">
+          <CardTitle className="flex items-center gap-2 text-base">
             Quote conversion model
-            <span className="ml-2 text-sm font-normal text-muted-foreground">last 24 months</span>
+            <span className="text-sm font-normal text-muted-foreground">last 24 months</span>
+            {report.isFetching && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -371,11 +377,12 @@ export function QuotesView() {
       <Card>
         <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <CardTitle className="text-base">
+            <CardTitle className="flex items-center gap-2 text-base">
               Quote outcome timeline
-              <span className="ml-2 text-sm font-normal text-muted-foreground">
+              <span className="text-sm font-normal text-muted-foreground">
                 30-day bands, last 24 months
               </span>
+              {report.isFetching && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
             </CardTitle>
             <p className="mt-1 text-sm text-muted-foreground">
               For a brand-new quote: how likely it is to win in each 30-day window, and where every quote ends up over
@@ -523,7 +530,10 @@ export function QuotesView() {
       {/* ---- Detail: open quotes ---- */}
       <Card>
         <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle className="text-base">Open quotes</CardTitle>
+          <CardTitle className="flex items-center gap-2 text-base">
+            Open quotes
+            {report.isFetching && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
+          </CardTitle>
           <Button
             variant="outline"
             size="sm"

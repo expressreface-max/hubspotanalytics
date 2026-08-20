@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { RefreshCw, AlertTriangle, Download } from "lucide-react"
+import { RefreshCw, AlertTriangle, Download, Loader2 } from "lucide-react"
 import { apiPost, formatCurrency, formatNumber } from "@/lib/api"
 import { resolveRange, RANGE_OPTIONS, defaultCustomRange, type RangeKey, type CustomRange } from "@/lib/date-ranges"
 import { DateRangeSelect } from "@/components/date-range-select"
@@ -104,7 +104,7 @@ export function ApptScheduledSection({ configured }: { configured: boolean }) {
   const totalAmount = useMemo(() => rows.reduce((s, d) => s + d.amount, 0), [rows])
   const withMeeting = useMemo(() => rows.filter((d) => d.meetingDate).length, [rows])
   const periodText = periodLabel(range, custom)
-  const loading = report.isLoading
+  const loading = report.isFetching || !report.data
 
   function exportCsv() {
     const header = [
@@ -170,7 +170,10 @@ export function ApptScheduledSection({ configured }: { configured: boolean }) {
     <Card>
       <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <CardTitle className="text-base">Appointments scheduled — with meeting dates</CardTitle>
+          <CardTitle className="flex items-center gap-2 text-base">
+            Appointments scheduled — with meeting dates
+            {report.isFetching && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
+          </CardTitle>
           <p className="mt-1 text-sm text-muted-foreground">
             All deals with an appointment scheduled during {periodText}, showing the meeting associated with each deal.
             {!loading && rows.length > 0 ? (
@@ -205,6 +208,10 @@ export function ApptScheduledSection({ configured }: { configured: boolean }) {
           </div>
         ) : loading ? (
           <div className="space-y-2">
+            <div className="flex items-center gap-2 pb-1 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" aria-label="Loading" />
+              Loading appointments…
+            </div>
             {Array.from({ length: 8 }).map((_, i) => (
               <Skeleton key={i} className="h-7 w-full" />
             ))}

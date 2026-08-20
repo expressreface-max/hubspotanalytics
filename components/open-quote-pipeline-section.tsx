@@ -1,6 +1,6 @@
 "use client"
 
-import { TrendingUp, CalendarDays } from "lucide-react"
+import { TrendingUp, CalendarDays, Loader2 } from "lucide-react"
 import { formatCurrency, formatNumber } from "@/lib/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -56,10 +56,16 @@ export function OpenQuotePipelineSection({
         {data?.error ? (
           <div className="py-2 text-sm text-destructive">{data.error || "Failed to load quote analysis."}</div>
         ) : loading ? (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {[0, 1, 2, 3].map((i) => (
-              <Skeleton key={i} className="h-40 w-full" />
-            ))}
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" aria-label="Loading" />
+              Loading pipeline data…
+            </div>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {[0, 1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-40 w-full" />
+              ))}
+            </div>
           </div>
         ) : (
           <div className="flex flex-col gap-5">

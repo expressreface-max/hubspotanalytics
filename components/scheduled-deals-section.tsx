@@ -2,7 +2,7 @@
 
 import { useMemo } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { RefreshCw, AlertTriangle, Download, CalendarClock } from "lucide-react"
+import { RefreshCw, AlertTriangle, Download, CalendarClock, Loader2 } from "lucide-react"
 import { apiPost, formatCurrency, formatNumber } from "@/lib/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -61,7 +61,7 @@ export function ScheduledDealsSection({
 
   const deals = report.data?.deals ?? []
   const totalAmount = report.data?.totalAmount ?? 0
-  const loading = report.isLoading
+  const loading = report.isFetching || !report.data
 
   const repCount = useMemo(() => new Set(deals.map((d) => d.ownerName)).size, [deals])
 
@@ -97,7 +97,10 @@ export function ScheduledDealsSection({
     <Card>
       <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <CardTitle className="text-base">Scheduled deals</CardTitle>
+          <CardTitle className="flex items-center gap-2 text-base">
+            Scheduled deals
+            {report.isFetching && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
+          </CardTitle>
           <p className="mt-1 text-sm text-muted-foreground">
             Deals that entered the Scheduled stage during {periodText}
             {loading ? null : (
@@ -128,6 +131,10 @@ export function ScheduledDealsSection({
           </div>
         ) : loading ? (
           <div className="space-y-2">
+            <div className="flex items-center gap-2 pb-1 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" aria-label="Loading" />
+              Loading scheduled deals…
+            </div>
             {Array.from({ length: 8 }).map((_, i) => (
               <Skeleton key={i} className="h-7 w-full" />
             ))}

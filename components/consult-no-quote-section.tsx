@@ -127,6 +127,10 @@ export function ConsultNoQuoteSection({ data, loading }: { data: ConsultNoQuoteD
           <div className="py-2 text-sm text-destructive">{data.error || "Failed to load consultations."}</div>
         ) : loading ? (
           <div className="flex flex-col gap-3">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+              Loading consultations…
+            </div>
             {[0, 1, 2].map((i) => (
               <Skeleton key={i} className="h-24 w-full" />
             ))}

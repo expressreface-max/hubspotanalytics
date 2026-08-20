@@ -1,7 +1,7 @@
 "use client"
 
 import { Fragment, useMemo, useState } from "react"
-import { ChevronRight } from "lucide-react"
+import { ChevronRight, Loader2 } from "lucide-react"
 import { formatCurrency, formatNumber } from "@/lib/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -189,6 +189,10 @@ export function SalesRepYtdSection({ data, loading }: { data: SalesRepYtdData | 
           <p className="py-6 text-center text-sm text-destructive">{data.error}</p>
         ) : loading ? (
           <div className="space-y-2">
+            <div className="flex items-center gap-2 pb-1 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" aria-label="Loading" />
+              Loading sales rep data…
+            </div>
             {Array.from({ length: 6 }).map((_, i) => (
               <Skeleton key={i} className="h-6 w-full" />
             ))}

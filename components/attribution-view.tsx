@@ -2,7 +2,7 @@
 
 import { Fragment, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Download, ChevronRight, ChevronDown } from "lucide-react"
+import { Download, ChevronRight, ChevronDown, Loader2 } from "lucide-react"
 import { apiGet, apiPost, formatCurrency, formatNumber } from "@/lib/api"
 import { resolveRange, defaultCustomRange, type RangeKey, type CustomRange } from "@/lib/date-ranges"
 import { DateRangeSelect } from "@/components/date-range-select"
@@ -34,12 +34,21 @@ type AttrResponse = {
 }
 
 type MetricKey = keyof Cell
-const METRICS: { key: MetricKey; label: string; money?: boolean }[] = [
+// `prevKey` marks the funnel stage each metric converts FROM, so we can show
+// "% of previous stage" next to Appointments (% of Contacts) and Closed won
+// (% of Appointments). Contacts and Revenue have no meaningful "previous"
+// stage in this funnel.
+const METRICS: { key: MetricKey; label: string; money?: boolean; prevKey?: MetricKey }[] = [
   { key: "contacts", label: "Contacts" },
-  { key: "appts", label: "Appointments" },
-  { key: "won", label: "Closed won" },
+  { key: "appts", label: "Appointments", prevKey: "contacts" },
+  { key: "won", label: "Closed won", prevKey: "appts" },
   { key: "revenue", label: "Revenue", money: true },
 ]
+
+function pctOf(numerator: number, denominator: number): string | null {
+  if (!denominator) return null
+  return `${((numerator / denominator) * 100).toFixed(1)}%`
+}
 
 function Pill({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
@@ -100,20 +109,51 @@ export function AttributionView() {
   const cellVal = (c: Cell | undefined) => (c ? c[metric] : 0)
 
   const metricLabel = METRICS.find((m) => m.key === metric)!.label
+  const activeMetricDef = METRICS.find((m) => m.key === metric)!
+  const prevMetricLabel = activeMetricDef.prevKey
+    ? METRICS.find((m) => m.key === activeMetricDef.prevKey)?.label
+    : null
 
   // Render the per-source metric cells + row total for one aggregation node.
+  // When the selected metric converts from a previous funnel stage (Appointments
+  // from Contacts, Closed won from Appointments), show that conversion rate as
+  // a small sub-line under the value so the percentage is visible everywhere
+  // the metric appears, not just in the summary tiles.
   const renderCells = (agg: Agg, dense: boolean) =>
     (data?.sources ?? []).map((s) => {
       const v = cellVal(agg.cells[s])
+      const prevV = activeMetricDef.prevKey ? agg.cells[s]?.[activeMetricDef.prevKey] ?? 0 : undefined
+      const pct = activeMetricDef.prevKey ? pctOf(v, prevV ?? 0) : null
       return (
         <td
           key={s}
           className={cn(dense ? "px-2 py-1.5" : "px-2 py-2", "text-right tabular-nums", v === 0 ? "text-muted-foreground/40" : "")}
         >
-          {v === 0 ? "–" : fmt(v)}
+          <div className="flex flex-col items-end">
+            <span>{v === 0 ? "–" : fmt(v)}</span>
+            {activeMetricDef.prevKey && v > 0 && (
+              <span className="text-[11px] font-normal text-muted-foreground">{pct ?? "–"}</span>
+            )}
+          </div>
         </td>
       )
     })
+
+  // Row-total value with the same "% of previous stage" sub-line as renderCells,
+  // used for the rightmost Total column and the footer totals row.
+  const totalCellValue = (agg: Agg) => {
+    const v = cellVal(agg.total)
+    const prevV = activeMetricDef.prevKey ? agg.total[activeMetricDef.prevKey] : undefined
+    const pct = activeMetricDef.prevKey ? pctOf(v, prevV ?? 0) : null
+    return (
+      <div className="flex flex-col items-end">
+        <span>{fmt(v)}</span>
+        {activeMetricDef.prevKey && v > 0 && (
+          <span className="text-[11px] font-normal text-muted-foreground">{pct ?? "–"}</span>
+        )}
+      </div>
+    )
+  }
 
   const exportCsv = () => {
     if (!data) return
@@ -191,27 +231,48 @@ export function AttributionView() {
 
       {/* Summary tiles: grand totals for the range (touch-dependent) */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {METRICS.map((m) => (
-          <Card key={m.key}>
-            <CardContent className="flex flex-col gap-1 py-4">
-              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{m.label}</span>
-              <span className="text-2xl font-semibold tabular-nums">
-                {data ? (m.money ? formatCurrency(data.grandTotal[m.key]) : formatNumber(data.grandTotal[m.key])) : "—"}
-              </span>
-            </CardContent>
-          </Card>
-        ))}
+        {METRICS.map((m) => {
+          const isLoading = report.isFetching || !data
+          const value = data?.grandTotal[m.key] ?? 0
+          const prevValue = m.prevKey ? data?.grandTotal[m.prevKey] : undefined
+          const pct = m.prevKey && data ? pctOf(value, prevValue ?? 0) : null
+          return (
+            <Card key={m.key}>
+              <CardContent className="flex flex-col gap-1 py-4">
+                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{m.label}</span>
+                {isLoading ? (
+                  <span className="flex items-center gap-2 py-1">
+                    <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="Loading" />
+                  </span>
+                ) : (
+                  <>
+                    <span className="text-2xl font-semibold tabular-nums">
+                      {m.money ? formatCurrency(value) : formatNumber(value)}
+                    </span>
+                    {m.prevKey && (
+                      <span className="text-xs text-muted-foreground">
+                        {pct ? `${pct} of ${METRICS.find((x) => x.key === m.prevKey)?.label}` : "—"}
+                      </span>
+                    )}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          )
+        })}
       </div>
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-3 pb-3">
           <div>
-            <CardTitle className="text-base">
+            <CardTitle className="flex items-center gap-2 text-base">
               {metricLabel} by region &amp; source · {touch === "first" ? "first" : "last"} touch
+              {report.isFetching && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
             </CardTitle>
             <p className="text-sm text-muted-foreground">
               Region → sub-region → territory. Click a region or sub-region to collapse. Columns are HubSpot marketing
-              sources.
+              sources.{" "}
+              {prevMetricLabel && `Small numbers under each value show % of ${prevMetricLabel.toLowerCase()}.`}
             </p>
           </div>
           <Button variant="outline" size="sm" className="gap-1.5" onClick={exportCsv} disabled={!data}>
@@ -226,6 +287,10 @@ export function AttributionView() {
             </div>
           ) : report.isFetching || !data ? (
             <div className="space-y-2">
+              <div className="flex items-center gap-2 pb-1 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" aria-label="Loading" />
+                Loading attribution data… this can take a little while.
+              </div>
               {Array.from({ length: 8 }).map((_, i) => (
                 <Skeleton key={i} className="h-7 w-full" />
               ))}
@@ -270,7 +335,7 @@ export function AttributionView() {
                             </span>
                           </td>
                           {renderCells(region, false)}
-                          <td className="px-2 py-2 text-right tabular-nums">{fmt(cellVal(region.total))}</td>
+                          <td className="px-2 py-2 text-right tabular-nums">{totalCellValue(region)}</td>
                         </tr>
 
                         {!rCollapsed &&
@@ -295,7 +360,7 @@ export function AttributionView() {
                                     </span>
                                   </td>
                                   {renderCells(sub, true)}
-                                  <td className="px-2 py-1.5 text-right tabular-nums">{fmt(cellVal(sub.total))}</td>
+                                  <td className="px-2 py-1.5 text-right tabular-nums">{totalCellValue(sub)}</td>
                                 </tr>
 
                                 {!sCollapsed &&
@@ -307,7 +372,7 @@ export function AttributionView() {
                                       <td className="sticky left-0 z-10 bg-card py-1.5 pl-10 pr-3">{terr.name}</td>
                                       {renderCells(terr, true)}
                                       <td className="px-2 py-1.5 text-right font-semibold tabular-nums">
-                                        {fmt(cellVal(terr.total))}
+                                        {totalCellValue(terr)}
                                       </td>
                                     </tr>
                                   ))}
@@ -321,12 +386,32 @@ export function AttributionView() {
                 <tfoot>
                   <tr className="border-t-2 font-semibold">
                     <td className="sticky left-0 z-10 bg-card py-2 pr-3">Total</td>
-                    {data.sources.map((s) => (
-                      <td key={s} className="px-2 py-2 text-right tabular-nums">
-                        {fmt(cellVal(data.columnTotals[s]))}
-                      </td>
-                    ))}
-                    <td className="px-2 py-2 text-right tabular-nums">{fmt(cellVal(data.grandTotal))}</td>
+                    {data.sources.map((s) => {
+                      const c = data.columnTotals[s]
+                      const v = cellVal(c)
+                      const prevV = activeMetricDef.prevKey ? c?.[activeMetricDef.prevKey] : undefined
+                      const pct = activeMetricDef.prevKey ? pctOf(v, prevV ?? 0) : null
+                      return (
+                        <td key={s} className="px-2 py-2 text-right tabular-nums">
+                          <div className="flex flex-col items-end">
+                            <span>{fmt(v)}</span>
+                            {activeMetricDef.prevKey && v > 0 && (
+                              <span className="text-[11px] font-normal text-muted-foreground">{pct ?? "–"}</span>
+                            )}
+                          </div>
+                        </td>
+                      )
+                    })}
+                    <td className="px-2 py-2 text-right tabular-nums">
+                      <div className="flex flex-col items-end">
+                        <span>{fmt(cellVal(data.grandTotal))}</span>
+                        {activeMetricDef.prevKey && cellVal(data.grandTotal) > 0 && (
+                          <span className="text-[11px] font-normal text-muted-foreground">
+                            {pctOf(cellVal(data.grandTotal), data.grandTotal[activeMetricDef.prevKey] ?? 0) ?? "–"}
+                          </span>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 </tfoot>
               </table>

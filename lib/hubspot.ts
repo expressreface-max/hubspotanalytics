@@ -267,6 +267,20 @@ export const CONTACT_TERRITORY_PROPERTIES = [
   ...ER_TERRITORY_FIELDS,
 ]
 
+// Contact properties needed for property/demographic enrichment lookups —
+// RealEstateAPI requires a full street address, not just zip.
+export const CONTACT_ADDRESS_PROPERTIES = [
+  "firstname",
+  "lastname",
+  "email",
+  "phone",
+  "address",
+  "city",
+  "state",
+  "zip",
+  "createdate",
+]
+
 export type HubSpotContact = {
   id: string
   properties: Record<string, string | null>

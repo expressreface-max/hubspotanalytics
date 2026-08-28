@@ -27,6 +27,7 @@ import {
   CircleCheck,
   CircleAlert,
   LogOut,
+  Search,
 } from "lucide-react"
 import {
   Sidebar,
@@ -54,6 +55,7 @@ const NAV_ITEMS = [
   { title: "Deals", href: "/deals", icon: Handshake },
   { title: "Contacts", href: "/contacts", icon: Users },
   { title: "Customers", href: "/customers", icon: UserCheck },
+  { title: "Customer Analysis", href: "/customer-analysis", icon: Search },
   { title: "Reports", href: "/reports", icon: FileBarChart },
   { title: "Funnel", href: "/territory", icon: Filter },
   { title: "Meetings", href: "/meetings", icon: CalendarCheck },

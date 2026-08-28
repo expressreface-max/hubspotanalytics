@@ -72,7 +72,7 @@ export function fmtDate(ms: number | null): string {
 }
 
 // Associated object ids of a given type for one deal (v4 associations).
-async function fetchAssocIds(token: string, dealId: string, type: string): Promise<string[]> {
+export async function fetchAssocIds(token: string, dealId: string, type: string): Promise<string[]> {
   try {
     const data = await hsFetch<{ results: { toObjectId: number }[] }>(
       `/crm/v4/objects/deals/${dealId}/associations/${type}?limit=100`,
@@ -84,7 +84,7 @@ async function fetchAssocIds(token: string, dealId: string, type: string): Promi
   }
 }
 
-async function batchReadObjects(
+export async function batchReadObjects(
   token: string,
   type: string,
   ids: string[],
@@ -113,6 +113,34 @@ async function batchReadObjects(
     }
   }
   return { objects: out, failed }
+}
+
+// Batch-fetch deal -> associated-object IDs for many deals in one call
+// (v4 batch associations), far cheaper than one GET per deal for large sets.
+export async function batchFetchAssocIds(
+  token: string,
+  dealIds: string[],
+  type: string,
+): Promise<Map<string, string[]>> {
+  const map = new Map<string, string[]>()
+  for (let i = 0; i < dealIds.length; i += 100) {
+    const chunk = dealIds.slice(i, i + 100)
+    try {
+      const data = await hsFetch<{
+        results: { from: { id: string }; to: { toObjectId: number }[] }[]
+      }>(`/crm/v4/associations/deals/${type}/batch/read`, {
+        token,
+        method: "POST",
+        body: JSON.stringify({ inputs: chunk.map((id) => ({ id })) }),
+      })
+      for (const r of data.results || []) {
+        map.set(String(r.from.id), (r.to || []).map((t) => String(t.toObjectId)))
+      }
+    } catch {
+      // best-effort; deals not present in the map get treated as "no contact"
+    }
+  }
+  return map
 }
 
 // stage id -> label across all deal pipelines (best-effort, cached per call).

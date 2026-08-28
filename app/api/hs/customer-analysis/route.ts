@@ -3,6 +3,7 @@ import { getActiveToken } from "@/lib/token-store"
 import {
   searchAllDeals,
   isClosedWon,
+  isClosedLost,
   enteredAnyStage,
   HubSpotError,
   QUOTED_STAGE_IDS,
@@ -43,6 +44,8 @@ function earliestQuotedTime(deal: HubSpotDeal): number | null {
   return min
 }
 
+export type DealStatus = "open" | "closed_won" | "closed_lost"
+
 export type CustomerAnalysisRow = {
   contactId: string
   dealId: string
@@ -58,6 +61,7 @@ export type CustomerAnalysisRow = {
   dealAmount: number
   quotedAt: string | null
   closedWon: boolean
+  dealStatus: DealStatus
   closedAt: string | null
   enrichment: PropertyEnrichment | null
 }
@@ -87,7 +91,7 @@ export async function POST(req: Request) {
       { filters: [{ propertyName: "closedate", operator: "GTE", value: String(from) }] },
     ]
 
-    const dealsDual = await searchAllDeals(token, dualFilterGroups, DEAL_PROPERTIES, 80)
+    const dealsDual = await searchAllDeals(token, dualFilterGroups, [...DEAL_PROPERTIES, "hs_is_closed"], 80)
 
     const seen = new Set<string>()
     const deals: HubSpotDeal[] = []
@@ -133,6 +137,7 @@ export async function POST(req: Request) {
       const c = contactMap.get(contactId)
       const quotedMs = earliestQuotedTime(d)
       const closedMs = d.properties.closedate ? Date.parse(d.properties.closedate) : NaN
+      const dealStatus: DealStatus = isClosedWon(d) ? "closed_won" : isClosedLost(d) ? "closed_lost" : "open"
       return {
         contactId,
         dealId: d.id,
@@ -148,6 +153,7 @@ export async function POST(req: Request) {
         dealAmount: dealAmount(d),
         quotedAt: quotedMs ? new Date(quotedMs).toISOString() : null,
         closedWon: isClosedWon(d),
+        dealStatus,
         closedAt: Number.isFinite(closedMs) ? new Date(closedMs).toISOString() : null,
         enrichment: null,
       }

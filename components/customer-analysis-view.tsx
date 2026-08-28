@@ -1,13 +1,15 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
+import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts"
 import { Play, Download, Loader2, Home, User2, MapPin } from "lucide-react"
 import { apiGet, apiPost, formatCurrency, formatNumber } from "@/lib/api"
 import { PageHeader } from "@/components/page-header"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
+import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
 import { cn } from "@/lib/utils"
 
 type Status = { configured: boolean }
@@ -41,6 +43,8 @@ type Enrichment = {
   skipTraceError: string | null
 }
 
+type DealStatus = "open" | "closed_won" | "closed_lost"
+
 type CustomerRow = {
   contactId: string
   dealId: string
@@ -56,6 +60,7 @@ type CustomerRow = {
   dealAmount: number
   quotedAt: string | null
   closedWon: boolean
+  dealStatus: DealStatus
   closedAt: string | null
   enrichment: Enrichment | null
 }
@@ -97,6 +102,150 @@ function fmtDate(iso: string | null): string {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
 }
 
+// ---- Distribution / comparison chart data ----
+
+function decadeLabel(year: number): string {
+  const decade = Math.floor(year / 10) * 10
+  return `${decade}s`
+}
+
+function decadeSort(a: string, b: string): number {
+  return Number.parseInt(a) - Number.parseInt(b)
+}
+
+const AGE_BUCKETS = [
+  { key: "<35", test: (a: number) => a < 35 },
+  { key: "35-44", test: (a: number) => a >= 35 && a < 45 },
+  { key: "45-54", test: (a: number) => a >= 45 && a < 55 },
+  { key: "55-64", test: (a: number) => a >= 55 && a < 65 },
+  { key: "65-74", test: (a: number) => a >= 65 && a < 75 },
+  { key: "75+", test: (a: number) => a >= 75 },
+]
+
+const VALUE_BUCKETS = [
+  { key: "<$300k", test: (v: number) => v < 300_000 },
+  { key: "$300-500k", test: (v: number) => v >= 300_000 && v < 500_000 },
+  { key: "$500-700k", test: (v: number) => v >= 500_000 && v < 700_000 },
+  { key: "$700k-1M", test: (v: number) => v >= 700_000 && v < 1_000_000 },
+  { key: "$1-1.5M", test: (v: number) => v >= 1_000_000 && v < 1_500_000 },
+  { key: "$1.5M+", test: (v: number) => v >= 1_500_000 },
+]
+
+function median(nums: number[]): number {
+  if (!nums.length) return 0
+  const s = [...nums].sort((a, b) => a - b)
+  const mid = Math.floor(s.length / 2)
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2
+}
+
+function avg(nums: number[]): number {
+  if (!nums.length) return 0
+  return nums.reduce((a, b) => a + b, 0) / nums.length
+}
+
+type DecadeRow = { decade: string; quoted: number; closedWon: number }
+type BucketRow = { bucket: string; count: number }
+type WonLostCompareRow = { metric: string; closedWon: number; closedLost: number }
+
+function buildDistributionCharts(rows: CustomerRow[]) {
+  const won = rows.filter((r) => r.dealStatus === "closed_won")
+  const lost = rows.filter((r) => r.dealStatus === "closed_lost")
+
+  // Year built by decade — quoted (all rows) vs closed-won overlay.
+  const decadeMap = new Map<string, { quoted: number; closedWon: number }>()
+  for (const r of rows) {
+    const yb = r.enrichment?.property?.yearBuilt
+    if (!yb || yb < 1800 || yb > new Date().getFullYear()) continue
+    const d = decadeLabel(yb)
+    const entry = decadeMap.get(d) || { quoted: 0, closedWon: 0 }
+    entry.quoted += 1
+    if (r.dealStatus === "closed_won") entry.closedWon += 1
+    decadeMap.set(d, entry)
+  }
+  const yearBuiltByDecade: DecadeRow[] = [...decadeMap.entries()]
+    .map(([decade, v]) => ({ decade, ...v }))
+    .sort((a, b) => decadeSort(a.decade, b.decade))
+
+  // Owner age distribution (all quoted rows with a known age).
+  const ages = rows.map((r) => r.enrichment?.owner?.age).filter((a): a is number => typeof a === "number" && a > 0)
+  const ownerAgeDistribution: BucketRow[] = AGE_BUCKETS.map((b) => ({
+    bucket: b.key,
+    count: ages.filter(b.test).length,
+  }))
+
+  // Home value distribution (all quoted rows with a known estimated value).
+  const values = rows
+    .map((r) => r.enrichment?.property?.estimatedValue)
+    .filter((v): v is number => typeof v === "number" && v > 0)
+  const homeValueDistribution: BucketRow[] = VALUE_BUCKETS.map((b) => ({
+    bucket: b.key,
+    count: values.filter(b.test).length,
+  }))
+
+  // Closed-won vs closed-lost comparison across key metrics.
+  const wonYears = won.map((r) => r.enrichment?.property?.yearBuilt).filter((y): y is number => !!y)
+  const lostYears = lost.map((r) => r.enrichment?.property?.yearBuilt).filter((y): y is number => !!y)
+  const wonAges = won.map((r) => r.enrichment?.owner?.age).filter((a): a is number => typeof a === "number" && a > 0)
+  const lostAges = lost.map((r) => r.enrichment?.owner?.age).filter((a): a is number => typeof a === "number" && a > 0)
+  const wonValues = won
+    .map((r) => r.enrichment?.property?.estimatedValue)
+    .filter((v): v is number => typeof v === "number" && v > 0)
+  const lostValues = lost
+    .map((r) => r.enrichment?.property?.estimatedValue)
+    .filter((v): v is number => typeof v === "number" && v > 0)
+  const wonDealAmt = won.map((r) => r.dealAmount).filter((v) => v > 0)
+  const lostDealAmt = lost.map((r) => r.dealAmount).filter((v) => v > 0)
+
+  const wonLostComparison: WonLostCompareRow[] = [
+    { metric: "Median year built", closedWon: Math.round(median(wonYears)), closedLost: Math.round(median(lostYears)) },
+    { metric: "Median owner age", closedWon: Math.round(median(wonAges)), closedLost: Math.round(median(lostAges)) },
+    {
+      metric: "Median home value ($k)",
+      closedWon: Math.round(median(wonValues) / 1000),
+      closedLost: Math.round(median(lostValues) / 1000),
+    },
+    {
+      metric: "Avg deal amount ($k)",
+      closedWon: Math.round(avg(wonDealAmt) / 1000),
+      closedLost: Math.round(avg(lostDealAmt) / 1000),
+    },
+  ]
+
+  return {
+    yearBuiltByDecade,
+    ownerAgeDistribution,
+    homeValueDistribution,
+    wonLostComparison,
+    wonCount: won.length,
+    lostCount: lost.length,
+    hasEnrichment: rows.some((r) => r.enrichment?.property || r.enrichment?.owner),
+  }
+}
+
+const decadeChartConfig: ChartConfig = {
+  quoted: { label: "All Quoted", color: "var(--chart-1)" },
+  closedWon: { label: "Closed Won", color: "var(--chart-2)" },
+}
+
+const singleSeriesConfig: ChartConfig = {
+  count: { label: "Customers", color: "var(--chart-1)" },
+}
+
+const wonLostConfig: ChartConfig = {
+  closedWon: { label: "Closed Won", color: "var(--chart-2)" },
+  closedLost: { label: "Closed Lost", color: "var(--destructive)" },
+}
+
+function EmptyChartNote({ hasEnrichment }: { hasEnrichment: boolean }) {
+  return (
+    <div className="flex h-[240px] items-center justify-center text-center text-sm text-muted-foreground">
+      {hasEnrichment
+        ? "No data available for this chart yet."
+        : "Requires property/owner enrichment (RealEstateAPI) — not available for these records."}
+    </div>
+  )
+}
+
 export function CustomerAnalysisView() {
   const [scope, setScope] = useState<"ever_quoted" | "closed_won">("ever_quoted")
 
@@ -106,13 +255,28 @@ export function CustomerAnalysisView() {
   })
   const connected = status.data?.configured
 
+  // Always fetch the ever-quoted superset (open + won + lost) so the
+  // distribution/comparison charts have full data regardless of which pill
+  // is selected for the table below. The table view filters client-side.
   const report = useQuery({
-    queryKey: ["customer-analysis", scope],
-    queryFn: () => apiPost<CustomerAnalysisResponse>("/api/hs/customer-analysis", { scope, limit: 300, enrich: true }),
+    queryKey: ["customer-analysis", "ever_quoted"],
+    queryFn: () =>
+      apiPost<CustomerAnalysisResponse>("/api/hs/customer-analysis", {
+        scope: "ever_quoted",
+        limit: 500,
+        enrich: true,
+      }),
     enabled: !!connected,
   })
 
-  const data = report.data
+  const allData = report.data
+  const data = useMemo(() => {
+    if (!allData) return allData
+    if (scope === "ever_quoted") return allData
+    return { ...allData, rows: allData.rows.filter((r) => r.dealStatus === "closed_won") }
+  }, [allData, scope])
+
+  const charts = useMemo(() => buildDistributionCharts(allData?.rows ?? []), [allData])
 
   const exportCsv = () => {
     if (!data) return
@@ -220,6 +384,119 @@ export function CustomerAnalysisView() {
           ) : null}
         </CardContent>
       </Card>
+
+      {connected && allData && !report.isFetching ? (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Year built by decade</CardTitle>
+              <CardDescription>All quoted customers vs. closed-won, grouped by decade the home was built</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {charts.yearBuiltByDecade.length === 0 ? (
+                <EmptyChartNote hasEnrichment={charts.hasEnrichment} />
+              ) : (
+                <ChartContainer config={decadeChartConfig} className="h-[240px] w-full">
+                  <BarChart data={charts.yearBuiltByDecade}>
+                    <CartesianGrid vertical={false} />
+                    <XAxis dataKey="decade" tickLine={false} axisLine={false} tickMargin={8} />
+                    <YAxis tickLine={false} axisLine={false} width={28} allowDecimals={false} />
+                    <ChartTooltip content={<ChartTooltipContent />} />
+                    <Bar dataKey="quoted" fill="var(--color-quoted)" radius={4} />
+                    <Bar dataKey="closedWon" fill="var(--color-closedWon)" radius={4} />
+                  </BarChart>
+                </ChartContainer>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Owner age distribution</CardTitle>
+              <CardDescription>Skip-traced owner age across all quoted customers</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {charts.ownerAgeDistribution.every((b) => b.count === 0) ? (
+                <EmptyChartNote hasEnrichment={charts.hasEnrichment} />
+              ) : (
+                <ChartContainer config={singleSeriesConfig} className="h-[240px] w-full">
+                  <BarChart data={charts.ownerAgeDistribution}>
+                    <CartesianGrid vertical={false} />
+                    <XAxis dataKey="bucket" tickLine={false} axisLine={false} tickMargin={8} />
+                    <YAxis tickLine={false} axisLine={false} width={28} allowDecimals={false} />
+                    <ChartTooltip content={<ChartTooltipContent />} />
+                    <Bar dataKey="count" fill="var(--color-count)" radius={4} />
+                  </BarChart>
+                </ChartContainer>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Home value distribution</CardTitle>
+              <CardDescription>Estimated property value across all quoted customers</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {charts.homeValueDistribution.every((b) => b.count === 0) ? (
+                <EmptyChartNote hasEnrichment={charts.hasEnrichment} />
+              ) : (
+                <ChartContainer config={singleSeriesConfig} className="h-[240px] w-full">
+                  <BarChart data={charts.homeValueDistribution}>
+                    <CartesianGrid vertical={false} />
+                    <XAxis dataKey="bucket" tickLine={false} axisLine={false} tickMargin={8} />
+                    <YAxis tickLine={false} axisLine={false} width={28} allowDecimals={false} />
+                    <ChartTooltip content={<ChartTooltipContent />} />
+                    <Bar dataKey="count" fill="var(--color-count)" radius={4} />
+                  </BarChart>
+                </ChartContainer>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Closed-won vs. closed-lost</CardTitle>
+              <CardDescription>
+                {formatNumber(charts.wonCount)} won · {formatNumber(charts.lostCount)} lost — median/average by metric
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {charts.wonCount === 0 && charts.lostCount === 0 ? (
+                <EmptyChartNote hasEnrichment={charts.hasEnrichment} />
+              ) : (
+                <ChartContainer config={wonLostConfig} className="h-[240px] w-full">
+                  <BarChart data={charts.wonLostComparison} layout="vertical" margin={{ left: 24 }}>
+                    <CartesianGrid horizontal={false} />
+                    <XAxis type="number" hide />
+                    <YAxis
+                      type="category"
+                      dataKey="metric"
+                      tickLine={false}
+                      axisLine={false}
+                      width={130}
+                      tick={{ fontSize: 11 }}
+                    />
+                    <ChartTooltip content={<ChartTooltipContent />} />
+                    <Bar dataKey="closedWon" fill="var(--color-closedWon)" radius={4} />
+                    <Bar dataKey="closedLost" fill="var(--color-closedLost)" radius={4} />
+                  </BarChart>
+                </ChartContainer>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      ) : connected && report.isFetching ? (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Card key={i}>
+              <CardContent className="pt-6">
+                <Skeleton className="h-[240px] w-full" />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : null}
 
       {!connected ? (
         <Card>

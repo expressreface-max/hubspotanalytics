@@ -161,6 +161,9 @@ type CustomerRow = {
   closedWon: boolean
   dealStatus: DealStatus
   closedAt: string | null
+  dealStage: string | null
+  dealStageLabel: string | null
+  pipeline: string | null
   enrichment: Enrichment | null
   dealEnrichment: DealDetailEnrichment | null
 }
@@ -175,10 +178,14 @@ type CustomerAnalysisResponse = {
   enriched: boolean
 }
 
-const SCOPES = [
-  { key: "ever_quoted" as const, label: "Ever Quoted" },
-  { key: "closed_won" as const, label: "Closed-Won" },
+// Two separate table pages the customer detail table toggles between:
+// "Quoted" = deals currently sitting in a quoted stage, still open.
+// "Closed" = deals that have closed, won or lost.
+const TABLE_PAGES = [
+  { key: "quoted" as const, label: "Quoted" },
+  { key: "closed" as const, label: "Closed" },
 ]
+type TablePage = (typeof TABLE_PAGES)[number]["key"]
 
 function Pill({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
@@ -202,16 +209,44 @@ function fmtDate(iso: string | null): string {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
 }
 
+// Years the current owner has lived in the home, based on last sale date.
+function yearsInHome(lastSaleDate: string | null): number | null {
+  if (!lastSaleDate) return null
+  const t = Date.parse(lastSaleDate)
+  if (Number.isNaN(t)) return null
+  const years = (Date.now() - t) / (365.25 * 24 * 60 * 60 * 1000)
+  return years >= 0 ? Math.floor(years * 10) / 10 : null
+}
+
+function fmtYearsInHome(y: number | null): string {
+  if (y == null) return "–"
+  return `${y.toFixed(1)} yr${y === 1 ? "" : "s"}`
+}
+
+// Days a deal has been sitting in a quoted stage (quotedAt -> now, or
+// quotedAt -> closedAt if it has since closed).
+function daysQuoted(quotedAt: string | null, closedAt: string | null): number | null {
+  if (!quotedAt) return null
+  const start = Date.parse(quotedAt)
+  if (Number.isNaN(start)) return null
+  const endRaw = closedAt ? Date.parse(closedAt) : Date.now()
+  const end = Number.isNaN(endRaw) ? Date.now() : endRaw
+  const days = Math.round((end - start) / (24 * 60 * 60 * 1000))
+  return days >= 0 ? days : null
+}
+
+function quotedYear(quotedAt: string | null): number | null {
+  if (!quotedAt) return null
+  const t = new Date(quotedAt)
+  if (Number.isNaN(t.getTime())) return null
+  return t.getFullYear()
+}
+
 // ---- Distribution / comparison chart data ----
 
-function decadeLabel(year: number): string {
-  const decade = Math.floor(year / 10) * 10
-  return `${decade}s`
-}
-
-function decadeSort(a: string, b: string): number {
-  return Number.parseInt(a) - Number.parseInt(b)
-}
+// Years to break every distribution chart out by, per quoted-date year.
+const CHART_YEARS = [2023, 2024, 2025, 2026] as const
+type ChartYear = (typeof CHART_YEARS)[number]
 
 const AGE_BUCKETS = [
   { key: "<35", test: (a: number) => a < 35 },
@@ -231,6 +266,35 @@ const VALUE_BUCKETS = [
   { key: "$1.5M+", test: (v: number) => v >= 1_500_000 },
 ]
 
+const YEAR_BUILT_BUCKETS = [
+  { key: "<1960", test: (y: number) => y < 1960 },
+  { key: "1960-79", test: (y: number) => y >= 1960 && y < 1980 },
+  { key: "1980-99", test: (y: number) => y >= 1980 && y < 2000 },
+  { key: "2000-14", test: (y: number) => y >= 2000 && y < 2015 },
+  { key: "2015+", test: (y: number) => y >= 2015 },
+]
+
+// Build a grouped-bar dataset: one row per bucket, with a count column per
+// chart year (keyed "y2023", "y2024", ...), based on each row's quoted year.
+function buildYearGroupedBuckets<T extends number>(
+  rows: CustomerRow[],
+  extractValue: (r: CustomerRow) => T | null | undefined,
+  buckets: { key: string; test: (v: T) => boolean }[],
+): Record<string, string | number>[] {
+  return buckets.map((b) => {
+    const out: Record<string, string | number> = { bucket: b.key }
+    for (const yr of CHART_YEARS) out[`y${yr}`] = 0
+    for (const r of rows) {
+      const qy = quotedYear(r.quotedAt)
+      if (!qy || !CHART_YEARS.includes(qy as ChartYear)) continue
+      const v = extractValue(r)
+      if (v == null || typeof v !== "number" || !b.test(v as T)) continue
+      out[`y${qy}`] = (out[`y${qy}`] as number) + 1
+    }
+    return out
+  })
+}
+
 function median(nums: number[]): number {
   if (!nums.length) return 0
   const s = [...nums].sort((a, b) => a - b)
@@ -243,44 +307,34 @@ function avg(nums: number[]): number {
   return nums.reduce((a, b) => a + b, 0) / nums.length
 }
 
-type DecadeRow = { decade: string; quoted: number; closedWon: number }
 type BucketRow = { bucket: string; count: number }
+type YearBucketRow = Record<string, string | number>
 type WonLostCompareRow = { metric: string; closedWon: number; closedLost: number }
 
 function buildDistributionCharts(rows: CustomerRow[]) {
   const won = rows.filter((r) => r.dealStatus === "closed_won")
   const lost = rows.filter((r) => r.dealStatus === "closed_lost")
 
-  // Year built by decade — quoted (all rows) vs closed-won overlay.
-  const decadeMap = new Map<string, { quoted: number; closedWon: number }>()
-  for (const r of rows) {
-    const yb = mergedEnrichment(r).property?.yearBuilt
-    if (!yb || yb < 1800 || yb > new Date().getFullYear()) continue
-    const d = decadeLabel(yb)
-    const entry = decadeMap.get(d) || { quoted: 0, closedWon: 0 }
-    entry.quoted += 1
-    if (r.dealStatus === "closed_won") entry.closedWon += 1
-    decadeMap.set(d, entry)
-  }
-  const yearBuiltByDecade: DecadeRow[] = [...decadeMap.entries()]
-    .map(([decade, v]) => ({ decade, ...v }))
-    .sort((a, b) => decadeSort(a.decade, b.decade))
+  // Year built distribution, grouped by quoted year (2023-2026).
+  const yearBuiltByYear: YearBucketRow[] = buildYearGroupedBuckets(
+    rows,
+    (r) => mergedEnrichment(r).property?.yearBuilt ?? null,
+    YEAR_BUILT_BUCKETS,
+  )
 
-  // Owner age distribution (all quoted rows with a known age).
-  const ages = rows.map((r) => mergedEnrichment(r).owner?.age).filter((a): a is number => typeof a === "number" && a > 0)
-  const ownerAgeDistribution: BucketRow[] = AGE_BUCKETS.map((b) => ({
-    bucket: b.key,
-    count: ages.filter(b.test).length,
-  }))
+  // Owner age distribution, grouped by quoted year (2023-2026).
+  const ownerAgeDistribution: YearBucketRow[] = buildYearGroupedBuckets(
+    rows,
+    (r) => mergedEnrichment(r).owner?.age ?? null,
+    AGE_BUCKETS,
+  )
 
-  // Home value distribution (all quoted rows with a known estimated value).
-  const values = rows
-    .map((r) => mergedEnrichment(r).property?.estimatedValue)
-    .filter((v): v is number => typeof v === "number" && v > 0)
-  const homeValueDistribution: BucketRow[] = VALUE_BUCKETS.map((b) => ({
-    bucket: b.key,
-    count: values.filter(b.test).length,
-  }))
+  // Home value distribution, grouped by quoted year (2023-2026).
+  const homeValueDistribution: YearBucketRow[] = buildYearGroupedBuckets(
+    rows,
+    (r) => mergedEnrichment(r).property?.estimatedValue ?? null,
+    VALUE_BUCKETS,
+  )
 
   // Closed-won vs closed-lost comparison across key metrics.
   const wonYears = won.map((r) => mergedEnrichment(r).property?.yearBuilt).filter((y): y is number => !!y)
@@ -312,7 +366,7 @@ function buildDistributionCharts(rows: CustomerRow[]) {
   ]
 
   return {
-    yearBuiltByDecade,
+    yearBuiltByYear,
     ownerAgeDistribution,
     homeValueDistribution,
     wonLostComparison,
@@ -322,13 +376,12 @@ function buildDistributionCharts(rows: CustomerRow[]) {
   }
 }
 
-const decadeChartConfig: ChartConfig = {
-  quoted: { label: "All Quoted", color: "var(--chart-1)" },
-  closedWon: { label: "Closed Won", color: "var(--chart-2)" },
-}
-
-const singleSeriesConfig: ChartConfig = {
-  count: { label: "Customers", color: "var(--chart-1)" },
+// Shared config for the 4-year grouped bar charts (age / home value / year built).
+const yearGroupedChartConfig: ChartConfig = {
+  y2023: { label: "2023", color: "var(--chart-1)" },
+  y2024: { label: "2024", color: "var(--chart-2)" },
+  y2025: { label: "2025", color: "var(--chart-3)" },
+  y2026: { label: "2026", color: "var(--chart-4)" },
 }
 
 const wonLostConfig: ChartConfig = {
@@ -347,7 +400,7 @@ function EmptyChartNote({ hasEnrichment }: { hasEnrichment: boolean }) {
 }
 
 export function CustomerAnalysisView() {
-  const [scope, setScope] = useState<"ever_quoted" | "closed_won">("ever_quoted")
+  const [tablePage, setTablePage] = useState<TablePage>("quoted")
 
   const status = useQuery({
     queryKey: ["config-status"],
@@ -370,11 +423,13 @@ export function CustomerAnalysisView() {
   })
 
   const allData = report.data
+  // "Quoted" page = deals still open (never yet closed won/lost).
+  // "Closed" page = deals that have closed, won or lost.
   const data = useMemo(() => {
     if (!allData) return allData
-    if (scope === "ever_quoted") return allData
-    return { ...allData, rows: allData.rows.filter((r) => r.dealStatus === "closed_won") }
-  }, [allData, scope])
+    if (tablePage === "quoted") return { ...allData, rows: allData.rows.filter((r) => r.dealStatus === "open") }
+    return { ...allData, rows: allData.rows.filter((r) => r.dealStatus !== "open") }
+  }, [allData, tablePage])
 
   const charts = useMemo(() => buildDistributionCharts(allData?.rows ?? []), [allData])
 
@@ -385,14 +440,17 @@ export function CustomerAnalysisView() {
       "Last",
       "Email",
       "Phone",
+      "Deal Stage",
       "Address",
       "City",
       "State",
       "Zip",
       "Deal Amount",
       "Quoted At",
+      "Days Quoted",
       "Closed Won",
       "Closed At",
+      "Years In Home",
       "Year Built",
       "Estimated Value",
       "Equity Percent",
@@ -417,14 +475,17 @@ export function CustomerAnalysisView() {
           esc(r.lastName),
           esc(r.email),
           esc(r.phone),
+          esc(r.dealStageLabel),
           esc(r.address),
           esc(r.city),
           esc(r.state),
           esc(r.zip),
           r.dealAmount,
           esc(r.quotedAt),
+          r.dealStatus === "open" ? daysQuoted(r.quotedAt, r.closedAt) ?? "" : "",
           r.closedWon,
           esc(r.closedAt),
+          yearsInHome(p?.lastSaleDate ?? null) ?? "",
           p?.yearBuilt ?? "",
           p?.estimatedValue ?? "",
           p?.equityPercent ?? "",
@@ -444,7 +505,7 @@ export function CustomerAnalysisView() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url
-    a.download = `customer-analysis-${scope}.csv`
+    a.download = `customer-analysis-${tablePage}.csv`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -458,12 +519,12 @@ export function CustomerAnalysisView() {
 
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Scope</CardTitle>
+          <CardTitle className="text-base">Table view</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center gap-2">
-            {SCOPES.map((s) => (
-              <Pill key={s.key} active={scope === s.key} onClick={() => setScope(s.key)}>
+            {TABLE_PAGES.map((s) => (
+              <Pill key={s.key} active={tablePage === s.key} onClick={() => setTablePage(s.key)}>
                 {s.label}
               </Pill>
             ))}
@@ -499,21 +560,22 @@ export function CustomerAnalysisView() {
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-base">Year built by decade</CardTitle>
-              <CardDescription>All quoted customers vs. closed-won, grouped by decade the home was built</CardDescription>
+              <CardTitle className="text-base">Year built distribution</CardTitle>
+              <CardDescription>Home age at time of quote, grouped by the year the deal was quoted</CardDescription>
             </CardHeader>
             <CardContent>
-              {charts.yearBuiltByDecade.length === 0 ? (
+              {charts.yearBuiltByYear.every((b) => CHART_YEARS.every((y) => (b[`y${y}`] as number) === 0)) ? (
                 <EmptyChartNote hasEnrichment={charts.hasEnrichment} />
               ) : (
-                <ChartContainer config={decadeChartConfig} className="h-[240px] w-full">
-                  <BarChart data={charts.yearBuiltByDecade}>
+                <ChartContainer config={yearGroupedChartConfig} className="h-[240px] w-full">
+                  <BarChart data={charts.yearBuiltByYear}>
                     <CartesianGrid vertical={false} />
-                    <XAxis dataKey="decade" tickLine={false} axisLine={false} tickMargin={8} />
+                    <XAxis dataKey="bucket" tickLine={false} axisLine={false} tickMargin={8} />
                     <YAxis tickLine={false} axisLine={false} width={28} allowDecimals={false} />
                     <ChartTooltip content={<ChartTooltipContent />} />
-                    <Bar dataKey="quoted" fill="var(--color-quoted)" radius={4} />
-                    <Bar dataKey="closedWon" fill="var(--color-closedWon)" radius={4} />
+                    {CHART_YEARS.map((y) => (
+                      <Bar key={y} dataKey={`y${y}`} fill={`var(--color-y${y})`} radius={4} />
+                    ))}
                   </BarChart>
                 </ChartContainer>
               )}
@@ -523,19 +585,21 @@ export function CustomerAnalysisView() {
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Owner age distribution</CardTitle>
-              <CardDescription>Skip-traced owner age across all quoted customers</CardDescription>
+              <CardDescription>Skip-traced owner age, grouped by the year the deal was quoted</CardDescription>
             </CardHeader>
             <CardContent>
-              {charts.ownerAgeDistribution.every((b) => b.count === 0) ? (
+              {charts.ownerAgeDistribution.every((b) => CHART_YEARS.every((y) => (b[`y${y}`] as number) === 0)) ? (
                 <EmptyChartNote hasEnrichment={charts.hasEnrichment} />
               ) : (
-                <ChartContainer config={singleSeriesConfig} className="h-[240px] w-full">
+                <ChartContainer config={yearGroupedChartConfig} className="h-[240px] w-full">
                   <BarChart data={charts.ownerAgeDistribution}>
                     <CartesianGrid vertical={false} />
                     <XAxis dataKey="bucket" tickLine={false} axisLine={false} tickMargin={8} />
                     <YAxis tickLine={false} axisLine={false} width={28} allowDecimals={false} />
                     <ChartTooltip content={<ChartTooltipContent />} />
-                    <Bar dataKey="count" fill="var(--color-count)" radius={4} />
+                    {CHART_YEARS.map((y) => (
+                      <Bar key={y} dataKey={`y${y}`} fill={`var(--color-y${y})`} radius={4} />
+                    ))}
                   </BarChart>
                 </ChartContainer>
               )}
@@ -545,19 +609,21 @@ export function CustomerAnalysisView() {
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Home value distribution</CardTitle>
-              <CardDescription>Estimated property value across all quoted customers</CardDescription>
+              <CardDescription>Estimated property value, grouped by the year the deal was quoted</CardDescription>
             </CardHeader>
             <CardContent>
-              {charts.homeValueDistribution.every((b) => b.count === 0) ? (
+              {charts.homeValueDistribution.every((b) => CHART_YEARS.every((y) => (b[`y${y}`] as number) === 0)) ? (
                 <EmptyChartNote hasEnrichment={charts.hasEnrichment} />
               ) : (
-                <ChartContainer config={singleSeriesConfig} className="h-[240px] w-full">
+                <ChartContainer config={yearGroupedChartConfig} className="h-[240px] w-full">
                   <BarChart data={charts.homeValueDistribution}>
                     <CartesianGrid vertical={false} />
                     <XAxis dataKey="bucket" tickLine={false} axisLine={false} tickMargin={8} />
                     <YAxis tickLine={false} axisLine={false} width={28} allowDecimals={false} />
                     <ChartTooltip content={<ChartTooltipContent />} />
-                    <Bar dataKey="count" fill="var(--color-count)" radius={4} />
+                    {CHART_YEARS.map((y) => (
+                      <Bar key={y} dataKey={`y${y}`} fill={`var(--color-y${y})`} radius={4} />
+                    ))}
                   </BarChart>
                 </ChartContainer>
               )}
@@ -624,7 +690,7 @@ export function CustomerAnalysisView() {
         <Card>
           <CardHeader className="flex-row items-center justify-between gap-3 pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
-              {scope === "ever_quoted" ? "Ever-quoted customers" : "Closed-won customers"}
+              {tablePage === "quoted" ? "Quoted customers" : "Closed customers"}
               {report.isFetching && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
             </CardTitle>
             {data ? (
@@ -642,16 +708,25 @@ export function CustomerAnalysisView() {
                 ))}
               </div>
             ) : data.rows.length === 0 ? (
-              <p className="py-10 text-center text-sm text-muted-foreground">No customers found for this scope.</p>
+              <p className="py-10 text-center text-sm text-muted-foreground">No customers found for this view.</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse text-sm">
                   <thead>
                     <tr className="border-b">
                       <th className="sticky left-0 z-10 min-w-40 bg-card py-2 pr-3 text-left font-medium">Customer</th>
+                      <th className="min-w-32 py-2 pr-3 text-left font-medium text-muted-foreground">Deal stage</th>
                       <th className="min-w-52 py-2 pr-3 text-left font-medium">Address</th>
                       <th className="py-2 pr-3 text-right font-medium tabular-nums text-muted-foreground">Deal amount</th>
                       <th className="py-2 pr-3 text-left font-medium text-muted-foreground">Quoted</th>
+                      {tablePage === "quoted" ? (
+                        <th className="py-2 pr-3 text-right font-medium tabular-nums text-muted-foreground">
+                          Days quoted
+                        </th>
+                      ) : null}
+                      <th className="py-2 pr-3 text-right font-medium tabular-nums text-muted-foreground">
+                        Years in home
+                      </th>
                       <th className="py-2 pr-3 text-right font-medium tabular-nums text-muted-foreground">Year built</th>
                       <th className="py-2 pr-3 text-right font-medium tabular-nums text-muted-foreground">Est. value</th>
                       <th className="py-2 pr-3 text-right font-medium tabular-nums text-muted-foreground">Equity %</th>
@@ -679,6 +754,7 @@ export function CustomerAnalysisView() {
                             </div>
                             <div className="text-xs text-muted-foreground">{r.email || r.phone || "—"}</div>
                           </td>
+                          <td className="py-2 pr-3 text-xs text-muted-foreground">{r.dealStageLabel || "–"}</td>
                           <td className="py-2 pr-3">
                             {r.address ? (
                               <div className="flex items-start gap-1.5">
@@ -701,6 +777,14 @@ export function CustomerAnalysisView() {
                             {r.closedWon ? (
                               <div className="text-emerald-600 dark:text-emerald-400">Won {fmtDate(r.closedAt)}</div>
                             ) : null}
+                          </td>
+                          {tablePage === "quoted" ? (
+                            <td className="py-2 pr-3 text-right tabular-nums">
+                              {daysQuoted(r.quotedAt, r.closedAt) ?? "–"}
+                            </td>
+                          ) : null}
+                          <td className="py-2 pr-3 text-right tabular-nums">
+                            {fmtYearsInHome(yearsInHome(p?.lastSaleDate ?? null))}
                           </td>
                           <td className="py-2 pr-3 text-right tabular-nums">{p?.yearBuilt ?? "–"}</td>
                           <td className="py-2 pr-3 text-right tabular-nums">

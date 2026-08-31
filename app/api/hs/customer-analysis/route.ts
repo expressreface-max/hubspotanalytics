@@ -13,7 +13,7 @@ import {
   dealAmount,
   type HubSpotDeal,
 } from "@/lib/hubspot"
-import { batchFetchAssocIds, batchReadObjects } from "@/lib/deal-context"
+import { batchFetchAssocIds, batchReadObjects, fetchStageLabelMap } from "@/lib/deal-context"
 import { enrichAddressesBatch, realEstateApiConfigured, type PropertyEnrichment } from "@/lib/realestate"
 import { getDealEnrichmentMap } from "@/lib/reapi-deal-enrichment"
 import type { DealDetailEnrichment } from "@/lib/reapi-deal-enrichment-types"
@@ -65,6 +65,9 @@ export type CustomerAnalysisRow = {
   closedWon: boolean
   dealStatus: DealStatus
   closedAt: string | null
+  dealStage: string | null
+  dealStageLabel: string | null
+  pipeline: string | null
   enrichment: PropertyEnrichment | null
   dealEnrichment: DealDetailEnrichment | null
 }
@@ -135,6 +138,8 @@ export async function POST(req: Request) {
     )
     const contactMap = new Map(contacts.map((c) => [c.id, c]))
 
+    const stageLabels = await fetchStageLabelMap(token)
+
     const rows: CustomerAnalysisRow[] = qualifying.map((d) => {
       const contactId = dealToContact.get(d.id) || ""
       const c = contactMap.get(contactId)
@@ -158,6 +163,9 @@ export async function POST(req: Request) {
         closedWon: isClosedWon(d),
         dealStatus,
         closedAt: Number.isFinite(closedMs) ? new Date(closedMs).toISOString() : null,
+        dealStage: d.properties.dealstage || null,
+        dealStageLabel: stageLabels[d.properties.dealstage || ""] || d.properties.dealstage || null,
+        pipeline: d.properties.pipeline || null,
         enrichment: null,
         dealEnrichment: null,
       }

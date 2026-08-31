@@ -78,8 +78,17 @@ export async function POST(req: Request) {
 
   const body: Body = await req.json().catch(() => ({}))
   const scope: Scope = body.scope === "closed_won" ? "closed_won" : "ever_quoted"
-  const limit = Math.min(Math.max(Number(body.limit) || 200, 1), 1000)
+  // No artificial row cap — return the full ever-quoted population so
+  // multi-year distribution charts and the customer table aren't silently
+  // truncated. A caller can still pass `limit` to request fewer rows.
+  const requestedLimit = Number(body.limit)
+  const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.floor(requestedLimit) : Infinity
   const enrich = body.enrich !== false
+  // Live RealEstateAPI fallback (for deals the nightly cron hasn't reached
+  // yet) is capped hard regardless of how many rows are returned overall —
+  // this endpoint must never fan out hundreds/thousands of live API calls
+  // from a single page load. The nightly cron is the real backfill path.
+  const MAX_LIVE_ENRICH_PER_REQUEST = 40
 
   try {
     // HubSpot caps search at 5 filterGroups, so we can't OR the 17
@@ -97,7 +106,7 @@ export async function POST(req: Request) {
       { filters: [{ propertyName: "closedate", operator: "GTE", value: String(from) }] },
     ]
 
-    const dealsDual = await searchAllDeals(token, dualFilterGroups, [...DEAL_PROPERTIES, "hs_is_closed"], 80)
+    const dealsDual = await searchAllDeals(token, dualFilterGroups, [...DEAL_PROPERTIES, "hs_is_closed"], 200)
 
     const seen = new Set<string>()
     const deals: HubSpotDeal[] = []
@@ -110,10 +119,12 @@ export async function POST(req: Request) {
     let qualifying = deals.filter((d) => enteredAnyStage(d, QUOTED_STAGE_IDS))
     if (scope === "closed_won") qualifying = qualifying.filter(isClosedWon)
 
-    // Most recent quoted deal per contact wins if a contact has multiple —
-    // sort newest first so we keep the latest engagement.
+    // Sort newest-quoted-first for display purposes. When a caller passes an
+    // explicit `limit`, that trims from here — but by default `limit` is
+    // Infinity, so nothing is dropped and the full ever-quoted population
+    // (including prior years) is returned.
     qualifying.sort((a, b) => (earliestQuotedTime(b) || 0) - (earliestQuotedTime(a) || 0))
-    qualifying = qualifying.slice(0, limit)
+    if (Number.isFinite(limit)) qualifying = qualifying.slice(0, limit)
 
     // Resolve deal -> contact associations in batch.
     const dealIds = qualifying.map((d) => d.id)
@@ -186,9 +197,13 @@ export async function POST(req: Request) {
     // Fallback: only for deals the nightly cron hasn't enriched yet, and only
     // when the caller explicitly opts in with `enrich=true`. Keeps the table
     // as the source of truth while still allowing on-demand lookups for a
-    // deal that's brand new.
+    // handful of brand-new deals — hard-capped so a large ever-quoted
+    // population can never trigger a runaway live API fan-out.
+    let liveEnrichSkipped = 0
     if (enrich && reapiConfigured) {
-      const toEnrich = rows.filter((r) => !r.dealEnrichment && r.address && r.zip)
+      const eligible = rows.filter((r) => !r.dealEnrichment && r.address && r.zip)
+      const toEnrich = eligible.slice(0, MAX_LIVE_ENRICH_PER_REQUEST)
+      liveEnrichSkipped = eligible.length - toEnrich.length
       const results = await enrichAddressesBatch(
         toEnrich.map((r) => ({
           address: r.address!,
@@ -214,6 +229,10 @@ export async function POST(req: Request) {
       reapiConfigured,
       enriched: enrich && reapiConfigured,
       dealTableEnrichedCount: rows.filter((r) => r.dealEnrichment).length,
+      // Deals eligible for live enrichment but skipped this request because
+      // of MAX_LIVE_ENRICH_PER_REQUEST — they'll pick up enrichment on the
+      // next nightly cron pass instead of being fetched live.
+      liveEnrichSkipped,
     })
   } catch (err) {
     if (err instanceof HubSpotError) {

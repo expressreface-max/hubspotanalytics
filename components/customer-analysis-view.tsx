@@ -176,6 +176,7 @@ type CustomerAnalysisResponse = {
   missingAddress: number
   reapiConfigured: boolean
   enriched: boolean
+  liveEnrichSkipped?: number
 }
 
 // Two separate table pages the customer detail table toggles between:
@@ -408,15 +409,16 @@ export function CustomerAnalysisView() {
   })
   const connected = status.data?.configured
 
-  // Always fetch the ever-quoted superset (open + won + lost) so the
-  // distribution/comparison charts have full data regardless of which pill
-  // is selected for the table below. The table view filters client-side.
+  // Always fetch the full ever-quoted superset (open + won + lost, no row
+  // cap) so the distribution/comparison charts and the table both see every
+  // qualifying customer back through the full lookback window — no `limit`
+  // is passed, so the backend returns everything instead of silently
+  // truncating to the most-recently-quoted N rows.
   const report = useQuery({
     queryKey: ["customer-analysis", "ever_quoted"],
     queryFn: () =>
       apiPost<CustomerAnalysisResponse>("/api/hs/customer-analysis", {
         scope: "ever_quoted",
-        limit: 500,
         enrich: true,
       }),
     enabled: !!connected,

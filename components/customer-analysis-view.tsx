@@ -43,6 +43,105 @@ type Enrichment = {
   skipTraceError: string | null
 }
 
+type DealDetailEnrichment = {
+  source: "table" | "live" | null
+  propertyDataAvailable: boolean
+  ownerDataAvailable: boolean
+  propertyError: string | null
+  ownerError: string | null
+  estimatedValue: number | null
+  estimatedEquity: number | null
+  equityPercent: number | null
+  lastSaleDate: string | null
+  lastSalePrice: number | null
+  ownerOccupied: boolean | null
+  absenteeOwner: boolean | null
+  vacant: boolean | null
+  highEquity: boolean | null
+  propertyType: string | null
+  yearBuilt: number | null
+  livingSquareFeet: number | null
+  bedrooms: number | null
+  bathrooms: number | null
+  lotSquareFeet: number | null
+  floodZone: boolean | null
+  mlsActive: boolean | null
+  mlsListingPrice: number | null
+  mlsStatus: string | null
+  ownerFullName: string | null
+  ownerAge: number | null
+  ownerGender: string | null
+  ownerMaritalStatus: string | null
+  ownerOccupation: string | null
+  ownerEmails: string[]
+  ownerPhones: string[]
+  ownerDncAllPhones: boolean | null
+  erTerritory: string | null
+  erSubRegion: string | null
+  erRegion: string | null
+  fetchedAt: string | null
+}
+
+// Merge the deal-keyed table enrichment (primary) with the legacy live
+// per-address enrichment (fallback for deals the nightly cron hasn't
+// reached yet) into the single shape the charts/table already read.
+function mergedEnrichment(r: CustomerRow): {
+  property: (PropertyDetail & { equityPercent: number | null; mlsStatus: string | null; mlsListingPrice: number | null; floodZone: boolean | null }) | null
+  owner: (SkipTraceOwner & { emails: string[]; phones: string[]; dnc: boolean | null }) | null
+  propertyError: string | null
+  skipTraceError: string | null
+  source: "table" | "live" | null
+} {
+  const de = r.dealEnrichment
+  if (de) {
+    return {
+      property:
+        de.propertyDataAvailable || de.estimatedValue != null
+          ? {
+              yearBuilt: de.yearBuilt,
+              propertyType: de.propertyType,
+              bedrooms: de.bedrooms,
+              bathrooms: de.bathrooms,
+              livingSquareFeet: de.livingSquareFeet,
+              estimatedValue: de.estimatedValue,
+              estimatedEquity: de.estimatedEquity,
+              ownerOccupied: de.ownerOccupied,
+              absenteeOwner: de.absenteeOwner,
+              lastSaleDate: de.lastSaleDate,
+              lastSalePrice: de.lastSalePrice,
+              medianIncomeArea: null,
+              equityPercent: de.equityPercent,
+              mlsStatus: de.mlsStatus,
+              mlsListingPrice: de.mlsListingPrice,
+              floodZone: de.floodZone,
+            }
+          : null,
+      owner: de.ownerDataAvailable
+        ? {
+            fullName: de.ownerFullName,
+            age: de.ownerAge,
+            maritalStatus: de.ownerMaritalStatus,
+            occupation: de.ownerOccupation,
+            emails: de.ownerEmails || [],
+            phones: de.ownerPhones || [],
+            dnc: de.ownerDncAllPhones,
+          }
+        : null,
+      propertyError: de.propertyError,
+      skipTraceError: de.ownerError,
+      source: "table",
+    }
+  }
+  const le = r.enrichment
+  return {
+    property: le?.property ? { ...le.property, equityPercent: null, mlsStatus: null, mlsListingPrice: null, floodZone: null } : null,
+    owner: le?.owner ? { ...le.owner, emails: [], phones: [], dnc: null } : null,
+    propertyError: le?.propertyError ?? null,
+    skipTraceError: le?.skipTraceError ?? null,
+    source: le ? "live" : null,
+  }
+}
+
 type DealStatus = "open" | "closed_won" | "closed_lost"
 
 type CustomerRow = {
@@ -63,6 +162,7 @@ type CustomerRow = {
   dealStatus: DealStatus
   closedAt: string | null
   enrichment: Enrichment | null
+  dealEnrichment: DealDetailEnrichment | null
 }
 
 type CustomerAnalysisResponse = {
@@ -154,7 +254,7 @@ function buildDistributionCharts(rows: CustomerRow[]) {
   // Year built by decade — quoted (all rows) vs closed-won overlay.
   const decadeMap = new Map<string, { quoted: number; closedWon: number }>()
   for (const r of rows) {
-    const yb = r.enrichment?.property?.yearBuilt
+    const yb = mergedEnrichment(r).property?.yearBuilt
     if (!yb || yb < 1800 || yb > new Date().getFullYear()) continue
     const d = decadeLabel(yb)
     const entry = decadeMap.get(d) || { quoted: 0, closedWon: 0 }
@@ -167,7 +267,7 @@ function buildDistributionCharts(rows: CustomerRow[]) {
     .sort((a, b) => decadeSort(a.decade, b.decade))
 
   // Owner age distribution (all quoted rows with a known age).
-  const ages = rows.map((r) => r.enrichment?.owner?.age).filter((a): a is number => typeof a === "number" && a > 0)
+  const ages = rows.map((r) => mergedEnrichment(r).owner?.age).filter((a): a is number => typeof a === "number" && a > 0)
   const ownerAgeDistribution: BucketRow[] = AGE_BUCKETS.map((b) => ({
     bucket: b.key,
     count: ages.filter(b.test).length,
@@ -175,7 +275,7 @@ function buildDistributionCharts(rows: CustomerRow[]) {
 
   // Home value distribution (all quoted rows with a known estimated value).
   const values = rows
-    .map((r) => r.enrichment?.property?.estimatedValue)
+    .map((r) => mergedEnrichment(r).property?.estimatedValue)
     .filter((v): v is number => typeof v === "number" && v > 0)
   const homeValueDistribution: BucketRow[] = VALUE_BUCKETS.map((b) => ({
     bucket: b.key,
@@ -183,15 +283,15 @@ function buildDistributionCharts(rows: CustomerRow[]) {
   }))
 
   // Closed-won vs closed-lost comparison across key metrics.
-  const wonYears = won.map((r) => r.enrichment?.property?.yearBuilt).filter((y): y is number => !!y)
-  const lostYears = lost.map((r) => r.enrichment?.property?.yearBuilt).filter((y): y is number => !!y)
-  const wonAges = won.map((r) => r.enrichment?.owner?.age).filter((a): a is number => typeof a === "number" && a > 0)
-  const lostAges = lost.map((r) => r.enrichment?.owner?.age).filter((a): a is number => typeof a === "number" && a > 0)
+  const wonYears = won.map((r) => mergedEnrichment(r).property?.yearBuilt).filter((y): y is number => !!y)
+  const lostYears = lost.map((r) => mergedEnrichment(r).property?.yearBuilt).filter((y): y is number => !!y)
+  const wonAges = won.map((r) => mergedEnrichment(r).owner?.age).filter((a): a is number => typeof a === "number" && a > 0)
+  const lostAges = lost.map((r) => mergedEnrichment(r).owner?.age).filter((a): a is number => typeof a === "number" && a > 0)
   const wonValues = won
-    .map((r) => r.enrichment?.property?.estimatedValue)
+    .map((r) => mergedEnrichment(r).property?.estimatedValue)
     .filter((v): v is number => typeof v === "number" && v > 0)
   const lostValues = lost
-    .map((r) => r.enrichment?.property?.estimatedValue)
+    .map((r) => mergedEnrichment(r).property?.estimatedValue)
     .filter((v): v is number => typeof v === "number" && v > 0)
   const wonDealAmt = won.map((r) => r.dealAmount).filter((v) => v > 0)
   const lostDealAmt = lost.map((r) => r.dealAmount).filter((v) => v > 0)
@@ -218,7 +318,7 @@ function buildDistributionCharts(rows: CustomerRow[]) {
     wonLostComparison,
     wonCount: won.length,
     lostCount: lost.length,
-    hasEnrichment: rows.some((r) => r.enrichment?.property || r.enrichment?.owner),
+    hasEnrichment: rows.some((r) => mergedEnrichment(r).property || mergedEnrichment(r).owner),
   }
 }
 
@@ -295,17 +395,22 @@ export function CustomerAnalysisView() {
       "Closed At",
       "Year Built",
       "Estimated Value",
+      "Equity Percent",
+      "MLS Status",
       "Owner Occupied",
       "Owner Age",
       "Owner Marital Status",
       "Owner Occupation",
+      "Owner Email",
+      "Owner Phone",
+      "Owner DNC",
       "Area Median Income",
     ]
     const lines = [header.join(",")]
     const esc = (v: any) => `"${String(v ?? "").replace(/"/g, '""')}"`
     for (const r of data.rows) {
-      const p = r.enrichment?.property
-      const o = r.enrichment?.owner
+      const p = mergedEnrichment(r).property
+      const o = mergedEnrichment(r).owner
       lines.push(
         [
           esc(r.firstName),
@@ -322,10 +427,15 @@ export function CustomerAnalysisView() {
           esc(r.closedAt),
           p?.yearBuilt ?? "",
           p?.estimatedValue ?? "",
+          p?.equityPercent ?? "",
+          esc(p?.mlsStatus),
           p?.ownerOccupied ?? "",
           o?.age ?? "",
           esc(o?.maritalStatus),
           esc(o?.occupation),
+          esc(o?.emails?.[0]),
+          esc(o?.phones?.[0]),
+          o?.dnc ?? "",
           p?.medianIncomeArea ?? "",
         ].join(","),
       )
@@ -544,9 +654,12 @@ export function CustomerAnalysisView() {
                       <th className="py-2 pr-3 text-left font-medium text-muted-foreground">Quoted</th>
                       <th className="py-2 pr-3 text-right font-medium tabular-nums text-muted-foreground">Year built</th>
                       <th className="py-2 pr-3 text-right font-medium tabular-nums text-muted-foreground">Est. value</th>
+                      <th className="py-2 pr-3 text-right font-medium tabular-nums text-muted-foreground">Equity %</th>
+                      <th className="py-2 pr-3 text-left font-medium text-muted-foreground">MLS status</th>
                       <th className="py-2 pr-3 text-center font-medium text-muted-foreground">Owner-occ</th>
                       <th className="py-2 pr-3 text-right font-medium tabular-nums text-muted-foreground">Owner age</th>
                       <th className="py-2 pr-3 text-left font-medium text-muted-foreground">Marital / Occupation</th>
+                      <th className="py-2 pr-3 text-left font-medium text-muted-foreground">Owner contact</th>
                       <th className="py-2 pr-3 text-right font-medium tabular-nums text-muted-foreground">
                         Area med. income
                       </th>
@@ -554,9 +667,9 @@ export function CustomerAnalysisView() {
                   </thead>
                   <tbody>
                     {data.rows.map((r) => {
-                      const p = r.enrichment?.property
-                      const o = r.enrichment?.owner
-                      const hasEnrichError = r.enrichment?.propertyError || r.enrichment?.skipTraceError
+                      const p = mergedEnrichment(r).property
+                      const o = mergedEnrichment(r).owner
+                      const hasEnrichError = mergedEnrichment(r).propertyError || mergedEnrichment(r).skipTraceError
                       return (
                         <tr key={r.dealId} className="border-b border-border/50 align-top">
                           <td className="sticky left-0 z-10 bg-card py-2 pr-3">
@@ -593,6 +706,12 @@ export function CustomerAnalysisView() {
                           <td className="py-2 pr-3 text-right tabular-nums">
                             {p?.estimatedValue ? formatCurrency(p.estimatedValue) : "–"}
                           </td>
+                          <td className="py-2 pr-3 text-right tabular-nums">
+                            {p?.equityPercent != null ? `${Math.round(p.equityPercent)}%` : "–"}
+                          </td>
+                          <td className="py-2 pr-3 text-xs text-muted-foreground">
+                            {p?.mlsStatus || (p?.mlsListingPrice ? formatCurrency(p.mlsListingPrice) : "–")}
+                          </td>
                           <td className="py-2 pr-3 text-center">
                             {p?.ownerOccupied == null ? (
                               "–"
@@ -614,6 +733,21 @@ export function CustomerAnalysisView() {
                           <td className="py-2 pr-3 text-xs text-muted-foreground">
                             {[o?.maritalStatus, o?.occupation].filter(Boolean).join(" · ") ||
                               (hasEnrichError ? "No match" : "–")}
+                          </td>
+                          <td className="py-2 pr-3 text-xs text-muted-foreground">
+                            {o?.emails?.[0] || o?.phones?.[0] ? (
+                              <>
+                                {o?.emails?.[0] && <div>{o.emails[0]}</div>}
+                                {o?.phones?.[0] && (
+                                  <div className={cn(o.dnc ? "text-amber-600 dark:text-amber-400" : undefined)}>
+                                    {o.phones[0]}
+                                    {o.dnc ? " (DNC)" : ""}
+                                  </div>
+                                )}
+                              </>
+                            ) : (
+                              "–"
+                            )}
                           </td>
                           <td className="py-2 pr-3 text-right tabular-nums">
                             {p?.medianIncomeArea ? formatCurrency(p.medianIncomeArea) : "–"}

@@ -7,6 +7,10 @@
     {
       "path": "/api/cron/open-quotes-scan",
       "schedule": "20 7 * * *"
+    },
+    {
+      "path": "/api/cron/reapi-enrich",
+      "schedule": "30 7 * * *"
     }
   ]
 }

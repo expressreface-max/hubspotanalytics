@@ -15,6 +15,8 @@ import {
 } from "@/lib/hubspot"
 import { batchFetchAssocIds, batchReadObjects } from "@/lib/deal-context"
 import { enrichAddressesBatch, realEstateApiConfigured, type PropertyEnrichment } from "@/lib/realestate"
+import { getDealEnrichmentMap } from "@/lib/reapi-deal-enrichment"
+import type { DealDetailEnrichment } from "@/lib/reapi-deal-enrichment-types"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 120
@@ -64,6 +66,7 @@ export type CustomerAnalysisRow = {
   dealStatus: DealStatus
   closedAt: string | null
   enrichment: PropertyEnrichment | null
+  dealEnrichment: DealDetailEnrichment | null
 }
 
 export async function POST(req: Request) {
@@ -156,14 +159,28 @@ export async function POST(req: Request) {
         dealStatus,
         closedAt: Number.isFinite(closedMs) ? new Date(closedMs).toISOString() : null,
         enrichment: null,
+        dealEnrichment: null,
       }
+    })
+
+    // Primary source: the nightly-cron-populated, deal_id-keyed table. This
+    // covers any deal the nightly job has already reached, with no live
+    // RealEstateAPI calls on page load.
+    const dealEnrichmentMap = await getDealEnrichmentMap(rows.map((r) => r.dealId))
+    rows.forEach((r) => {
+      const hit = dealEnrichmentMap.get(r.dealId)
+      if (hit) r.dealEnrichment = hit
     })
 
     const missingAddress = rows.filter((r) => !r.address || !r.zip).length
     const reapiConfigured = realEstateApiConfigured()
 
+    // Fallback: only for deals the nightly cron hasn't enriched yet, and only
+    // when the caller explicitly opts in with `enrich=true`. Keeps the table
+    // as the source of truth while still allowing on-demand lookups for a
+    // deal that's brand new.
     if (enrich && reapiConfigured) {
-      const toEnrich = rows.filter((r) => r.address && r.zip)
+      const toEnrich = rows.filter((r) => !r.dealEnrichment && r.address && r.zip)
       const results = await enrichAddressesBatch(
         toEnrich.map((r) => ({
           address: r.address!,
@@ -188,6 +205,7 @@ export async function POST(req: Request) {
       missingAddress,
       reapiConfigured,
       enriched: enrich && reapiConfigured,
+      dealTableEnrichedCount: rows.filter((r) => r.dealEnrichment).length,
     })
   } catch (err) {
     if (err instanceof HubSpotError) {

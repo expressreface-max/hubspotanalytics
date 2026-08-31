@@ -179,12 +179,15 @@ type CustomerAnalysisResponse = {
   liveEnrichSkipped?: number
 }
 
-// Two separate table pages the customer detail table toggles between:
+// Three table pages the customer detail table toggles between:
 // "Quoted" = deals currently sitting in a quoted stage, still open.
-// "Closed" = deals that have closed, won or lost.
+// "Closed" = deals that closed WON (the default closed view).
+// "Closed lost" = deals that closed LOST, selected separately so the two
+// outcomes are never shown mixed together.
 const TABLE_PAGES = [
   { key: "quoted" as const, label: "Quoted" },
-  { key: "closed" as const, label: "Closed" },
+  { key: "closed_won" as const, label: "Closed" },
+  { key: "closed_lost" as const, label: "Closed lost" },
 ]
 type TablePage = (typeof TABLE_PAGES)[number]["key"]
 
@@ -425,12 +428,14 @@ export function CustomerAnalysisView() {
   })
 
   const allData = report.data
-  // "Quoted" page = deals still open (never yet closed won/lost).
-  // "Closed" page = deals that have closed, won or lost.
+  // "Quoted" = deals still open. "Closed" = closed won only. "Closed lost" =
+  // closed lost only — the two outcomes are never shown mixed together.
   const data = useMemo(() => {
     if (!allData) return allData
     if (tablePage === "quoted") return { ...allData, rows: allData.rows.filter((r) => r.dealStatus === "open") }
-    return { ...allData, rows: allData.rows.filter((r) => r.dealStatus !== "open") }
+    if (tablePage === "closed_won")
+      return { ...allData, rows: allData.rows.filter((r) => r.dealStatus === "closed_won") }
+    return { ...allData, rows: allData.rows.filter((r) => r.dealStatus === "closed_lost") }
   }, [allData, tablePage])
 
   const charts = useMemo(() => buildDistributionCharts(allData?.rows ?? []), [allData])
@@ -692,7 +697,11 @@ export function CustomerAnalysisView() {
         <Card>
           <CardHeader className="flex-row items-center justify-between gap-3 pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
-              {tablePage === "quoted" ? "Quoted customers" : "Closed customers"}
+              {tablePage === "quoted"
+                ? "Quoted customers"
+                : tablePage === "closed_won"
+                  ? "Closed customers"
+                  : "Closed lost customers"}
               {report.isFetching && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
             </CardTitle>
             {data ? (
@@ -776,8 +785,10 @@ export function CustomerAnalysisView() {
                           <td className="py-2 pr-3 text-right tabular-nums">{formatCurrency(r.dealAmount)}</td>
                           <td className="py-2 pr-3 text-xs text-muted-foreground">
                             {fmtDate(r.quotedAt)}
-                            {r.closedWon ? (
+                            {r.dealStatus === "closed_won" ? (
                               <div className="text-emerald-600 dark:text-emerald-400">Won {fmtDate(r.closedAt)}</div>
+                            ) : r.dealStatus === "closed_lost" ? (
+                              <div className="text-destructive">Lost {fmtDate(r.closedAt)}</div>
                             ) : null}
                           </td>
                           {tablePage === "quoted" ? (

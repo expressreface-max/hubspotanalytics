@@ -93,7 +93,7 @@ export function buildWindows(byDate: Record<string, BaseMetrics>, now = new Date
 
 // ─────────────────────────────────────────────────────────── Meta (Facebook) ──
 
-const META_API_VERSION = process.env.META_API_VERSION || "v21.0"
+const META_API_VERSION = process.env.META_API_VERSION || "v22.0"
 
 /**
  * Which Meta action_types count as a conversion. Meta returns many overlapping

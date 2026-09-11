@@ -162,9 +162,13 @@ export function AdsPerformanceView() {
             <div className="space-y-1">
               <p className="text-base font-medium">Ad platforms are not connected</p>
               <p className="max-w-md text-sm text-muted-foreground">
-                Add <code className="rounded bg-muted px-1">ADS_SUPABASE_URL</code> and{" "}
-                <code className="rounded bg-muted px-1">ADS_SUPABASE_SERVICE_KEY</code> in Settings → Vars so the app can
-                read the stored Meta and Google Ads credentials.
+                Add the ad-platform credentials in Settings → Vars. Meta needs{" "}
+                <code className="rounded bg-muted px-1">META_ACCESS_TOKEN</code>; Google Ads needs{" "}
+                <code className="rounded bg-muted px-1">GOOGLE_ADS_DEVELOPER_TOKEN</code>,{" "}
+                <code className="rounded bg-muted px-1">GOOGLE_ADS_CLIENT_ID</code>,{" "}
+                <code className="rounded bg-muted px-1">GOOGLE_ADS_CLIENT_SECRET</code>, and{" "}
+                <code className="rounded bg-muted px-1">GOOGLE_ADS_REFRESH_TOKEN</code>. Account IDs are pre-filled from
+                the access handoff.
               </p>
             </div>
             {data?.notes?.length ? (

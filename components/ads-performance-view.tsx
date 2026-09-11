@@ -247,7 +247,67 @@ export function AdsPerformanceView() {
             })}
           </div>
 
-          {/* Matrix */}
+          {/* Aggregate performance: all metrics × all windows for the current platform scope */}
+          <Card>
+            <CardContent className="p-0">
+              <div className="border-b px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-muted-foreground">
+                Aggregate performance{" "}
+                <span className="font-normal normal-case">
+                  · {platform === "all" ? "all campaigns combined" : `${PLATFORM_LABEL[platform]} — all campaigns`}
+                </span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px] text-sm">
+                  <thead>
+                    <tr className="border-b bg-muted/40 text-left">
+                      <th className="sticky left-0 z-10 bg-muted/40 px-4 py-2.5 font-semibold">Metric</th>
+                      {WINDOW_KEYS.map((k) => (
+                        <th key={k} className="px-4 py-2.5 text-right font-semibold">
+                          {WINDOW_LABEL[k]}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {isLoading
+                      ? [...Array(METRICS.length)].map((_, i) => (
+                          <tr key={i} className="border-b last:border-0">
+                            <td className="sticky left-0 bg-card px-4 py-2.5">
+                              <Skeleton className="h-4 w-32" />
+                            </td>
+                            {WINDOW_KEYS.map((k) => (
+                              <td key={k} className="px-4 py-2.5 text-right">
+                                <Skeleton className="ml-auto h-4 w-12" />
+                              </td>
+                            ))}
+                          </tr>
+                        ))
+                      : METRICS.map((m) => {
+                          const src = platform === "all" ? totalsRow("combined") : totalsRow(platform)
+                          return (
+                            <tr
+                              key={m.key}
+                              className={cn(
+                                "border-b last:border-0 hover:bg-accent/40",
+                                m.key === metric && "bg-primary/5",
+                              )}
+                            >
+                              <td className="sticky left-0 z-10 bg-card px-4 py-2.5 font-medium">{m.label}</td>
+                              {WINDOW_KEYS.map((k) => (
+                                <td key={k} className="px-4 py-2.5 text-right num">
+                                  {fmtValue(metricOf(src?.[k], m.key), m.fmt)}
+                                </td>
+                              ))}
+                            </tr>
+                          )
+                        })}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Per-campaign matrix */}
           <Card>
             <CardContent className="p-0">
               <div className="overflow-x-auto">

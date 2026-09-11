@@ -55,6 +55,11 @@ export const ADVERTISING_DATA: AdSpendRow[] = [
   { month: "2026-03", digital: 53407.59, television: 28350.01, print: 13300 },
   { month: "2026-04", digital: 89222.47, television: 30400, print: 5945 },
   { month: "2026-05", digital: 59678.39, television: 21650, print: 5945 },
+  // Jun–Aug 2026 backfilled from Kitchens Now QuickBooks (60100 Advertising
+  // Expense subaccounts: 60110 Digital, 60120 Television, 60130 Print).
+  { month: "2026-06", digital: 69110.58, television: 42282.19, print: 5525 },
+  { month: "2026-07", digital: 64440.45, television: 51431.06, print: 5945 },
+  { month: "2026-08", digital: 49129.45, television: 0, print: 0 },
 ]
 
 export type AdChannelKey = "digital" | "television" | "print"

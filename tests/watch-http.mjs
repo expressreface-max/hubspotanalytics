@@ -1,4 +1,7 @@
 // Local production-build boundary checks. Synthetic secret only; no CRM access.
+// Server: AUTH_SESSION_SECRET=synthetic-watch-session-test-only
+// CRON_SECRET=synthetic-watch-cron-test-only ALLOWED_ANALYTICS_EMAILS=qa@example.invalid
+// SALES_WATCH_ENABLED=false; use an unreachable synthetic POSTGRES_URL.
 import { createHmac } from "node:crypto"
 import assert from "node:assert/strict"
 const origin=process.env.WATCH_TEST_ORIGIN || "http://localhost:5182"

@@ -25,3 +25,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+# Synthetic preview output and local QA artifacts
+preview-dist/
+qa/
+qa-*.png
+live-data/
+preview/live-report.json

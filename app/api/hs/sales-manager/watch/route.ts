@@ -29,7 +29,16 @@ const bodySchema = z.discriminatedUnion("action",[
 export async function POST(req: Request) {
   const user = await session()
   if (!user) return NextResponse.json({error:"Not authenticated"},{status:401})
-  if (req.headers.get("origin") !== new URL(req.url).origin) return NextResponse.json({error:"Same-origin request required"},{status:403})
+  // Next's standalone server may normalize req.url to its bind hostname.
+  // Compare against the request's Host, not an arbitrary forwarded-host value.
+  const origin=req.headers.get("origin")
+  let sameOrigin=false
+  try {
+    const parsed=new URL(origin || "")
+    sameOrigin=parsed.host.toLowerCase()===req.headers.get("host")?.toLowerCase() &&
+      parsed.protocol===new URL(req.url).protocol && ["http:","https:"].includes(parsed.protocol)
+  } catch {}
+  if (!sameOrigin) return NextResponse.json({error:"Same-origin request required"},{status:403})
   const body = bodySchema.safeParse(await req.json().catch(()=>null))
   if (!body.success) return NextResponse.json({error:"Invalid request or confirmation missing"},{status:400})
   try {

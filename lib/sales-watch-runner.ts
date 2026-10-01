@@ -3,11 +3,38 @@ import { createHash, randomUUID } from "node:crypto"
 import { generateText } from "ai"
 import { sql } from "@/lib/db"
 import { pickAnalysisModel } from "@/lib/ai-model"
-import { discoverTargets, watchContext, type Target } from "@/lib/sales-watch-source"
+import { discoverTargets, watchContext, type Target, type WatchContext } from "@/lib/sales-watch-source"
 import { WATCH_SYSTEM, QUOTE_SYSTEM, verifiedSignals, routeFor } from "@/lib/sales-watch-analysis"
 import { pacificDate, type WatchItem, type PipelineRecord } from "@/lib/sales-watch"
 import { REVIEW_LABELS } from "@/lib/sales-watch-policy"
 import { readWatch, readWatchErrors, readWatchJson } from "@/lib/sales-watch-store"
+
+class WatchAnalysisError extends Error {}
+
+export async function analyzeWatchContext(ctx: WatchContext, selection = pickAnalysisModel()) {
+  let failure = "Model request failed; check provider access and quota. No assessment was saved."
+  try {
+    const { text, finishReason } = await generateText({
+      model: selection.model, system: WATCH_SYSTEM + QUOTE_SYSTEM,
+      prompt: JSON.stringify({ now: new Date().toISOString(), timezone: "America/Los_Angeles", ...ctx }),
+      // Gemini's default thinking can consume the output cap before finishing JSON.
+      providerOptions: selection.isPaid ? { google: { thinkingConfig: { thinkingBudget: 1024, includeThoughts: false } } } : undefined,
+      maxOutputTokens: 6500, maxRetries: 0, abortSignal: AbortSignal.timeout(40000),
+    })
+    if (finishReason === "length") throw new WatchAnalysisError("Model response exceeded the output limit; no assessment was saved.")
+    if (finishReason !== "stop") throw new WatchAnalysisError("Model did not finish an assessment; review provider availability and content restrictions.")
+    failure = "Model returned incomplete or invalid JSON; no assessment was saved."
+    const raw = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""))
+    failure = "Model assessment failed schema or literal-evidence checks; no assessment was saved."
+    return verifiedSignals(raw, ctx)
+  } catch (error) {
+    if (error instanceof WatchAnalysisError) throw error
+    if (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name)) {
+      throw new WatchAnalysisError("Model request timed out; no assessment was saved.")
+    }
+    throw new WatchAnalysisError(failure)
+  }
+}
 
 // Entire feature is off until migration + controlled canary + explicit activation.
 // Lock lasts longer than the route's 300s execution limit; expired leases recover.
@@ -65,7 +92,7 @@ export async function runWatch(token: string, trigger: "nightly" | "manual") {
         await tx`update sales_watch_runs set discovery_complete=true, errors=${tx.json(discovery.coverage)} where id=${run.id}`
       })
     }
-    const { model } = pickAnalysisModel()
+    const selection = pickAnalysisModel()
     // Per-invocation cap: continuations can finish the entire inventory rather
     // than becoming permanently stuck behind a cumulative attempt ceiling.
     const maxBatch = Number(process.env.SALES_WATCH_BATCH_SIZE || 20)
@@ -88,12 +115,7 @@ export async function runWatch(token: string, trigger: "nightly" | "manual") {
           continue
         }
         if (Date.now() > deadline - 45000) throw new Error("Context completed too near deadline; analysis deferred.")
-        const { text } = await generateText({
-          model, system: WATCH_SYSTEM + QUOTE_SYSTEM,
-          prompt: JSON.stringify({ now: new Date().toISOString(), timezone:"America/Los_Angeles", ...ctx }),
-          maxOutputTokens: 6500, maxRetries: 0, abortSignal: AbortSignal.timeout(40000),
-        })
-        const parsed = verifiedSignals(JSON.parse(text.replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/,"")), ctx)
+        const parsed = await analyzeWatchContext(ctx, selection)
         await sql.begin(async tx => {
           // Omitted findings stay available for human disposition, but do not
           // remain automatic call recommendations after a newer analysis.
@@ -149,10 +171,11 @@ export async function runWatch(token: string, trigger: "nightly" | "manual") {
           await tx`update sales_watch_queue set status='done',error=${ctx.coverage.length ? ctx.coverage.join(" ") : null}
             where run_id=${run.id} and subject_key=${q.subject_key}`
         })
-      } catch {
+      } catch (error) {
         await sql`update sales_watch_items set payload=jsonb_set(payload,'{callEligible}','false') where subject_key=${q.subject_key}`
-        // No raw provider errors, bodies, tokens or transcripts in logs/UI.
-        await sql`update sales_watch_queue set status='failed',error='Read or analysis failed; retry or review coverage.'
+        // Only fixed diagnostic messages may reach the UI, never provider payloads.
+        const failure = error instanceof WatchAnalysisError ? error.message : "Read or storage failed; retry or review coverage."
+        await sql`update sales_watch_queue set status='failed',error=${failure}
           where run_id=${run.id} and subject_key=${q.subject_key}`
       }
     }

@@ -14,6 +14,8 @@ test("live runner persists quote inventories, suppresses fulfilled calls and ret
   let decision:"now"|"wait"|"no_contact"="now"
   let modelCalls=0,crmCalls=0
   let twoDeals=false
+  let modelFailure: "none" | "length" | "json" | "evidence" | "provider" | "timeout" = "none"
+  const privateError = "synthetic-private-provider-payload-never-persist"
   const adapter=(conn:any):any=>{
     const tag:any=async(strings:any,...values:any[])=>{
       if(!Array.isArray(strings)||!("raw" in strings))return {list:strings}
@@ -50,13 +52,20 @@ test("live runner persists quote inventories, suppresses fulfilled calls and ret
       const respond=(data:unknown)=>new Response(JSON.stringify(data),{status:200,headers:{"content-type":"application/json"}})
       if(url.includes("generativelanguage.googleapis.com")) {
         modelCalls++
+        const request=JSON.parse(String(init?.body))
+        assert.equal(request.generationConfig.thinkingConfig.thinkingBudget,1024)
+        assert.equal(request.generationConfig.thinkingConfig.includeThoughts,false)
+        assert.equal(request.generationConfig.maxOutputTokens,6500)
+        if(modelFailure==="provider") return new Response(JSON.stringify({error:{code:429,message:privateError,status:"RESOURCE_EXHAUSTED"}}),{status:429,headers:{"content-type":"application/json"}})
+        if(modelFailure==="timeout") throw new DOMException(privateError,"TimeoutError")
         const parsed={doNotCall:decision==="no_contact",outreachDecision:decision,
           quoteReview:{decision,summary:body(),reason:"Explicit synthetic customer instruction.",nextAction:decision==="now"?"Call to discuss the proposal.":"Honor the customer's preference.",
             timing:decision==="now"?"Today":"Do not call today",timingBasis:"Customer instruction in source.",confidence:"high",evidence:[{id:"calls:51",quote:body()}]},
           signals:decision==="now"?[{kind:"follow_up",severity:"high",summary:body(),stream:"sales",
             background:"Synthetic proposal.",latestUpdate:body(),callObjective:"Answer proposal questions.",verification:"Verify newer CRM activity.",
             nextAction:"Call to discuss the proposal.",dueAt:null,confidence:"high",evidence:[{id:"calls:51",quote:body()}]}]:[]}
-        return respond({candidates:[{content:{role:"model",parts:[{text:JSON.stringify(parsed)}]},finishReason:"STOP"}],
+        if(modelFailure==="evidence")parsed.quoteReview.evidence[0].quote="Fabricated evidence must never become a saved assessment."
+        return respond({candidates:[{content:{role:"model",parts:[{text:modelFailure==="json"?`{${privateError}`:JSON.stringify(parsed)}]},finishReason:modelFailure==="length"?"MAX_TOKENS":"STOP"}],
           usageMetadata:{promptTokenCount:100,candidatesTokenCount:100,totalTokenCount:200}})
       }
       if(!url.startsWith("https://api.hubapi.com/"))throw new Error("Unexpected network request blocked")
@@ -145,6 +154,37 @@ test("live runner persists quote inventories, suppresses fulfilled calls and ret
     assert.deepEqual((await db.query("select jsonb_typeof(errors) as type from sales_watch_runs where id=$1",[partial.run?.id])).rows,[{type:"array"}])
     assert.deepEqual((await db.query("select jsonb_typeof(payload) as type from sales_watch_inventory where run_id=$1 and deal_id='32'",[partial.run?.id])).rows,[{type:"object"}])
     assert.equal(modelCalls,6)
+    twoDeals=false
+    await db.exec("update sales_watch_items set status='resolved' where subject_key='deals:32'")
+    const errors={
+      length:"Model response exceeded the output limit; no assessment was saved.",
+      json:"Model returned incomplete or invalid JSON; no assessment was saved.",
+      evidence:"Model assessment failed schema or literal-evidence checks; no assessment was saved.",
+      provider:"Model request failed; check provider access and quota. No assessment was saved.",
+      timeout:"Model request timed out; no assessment was saved.",
+    } as const
+    for(const mode of Object.keys(errors) as (keyof typeof errors)[]) {
+      await db.exec("update sales_watch_runs set started_at=started_at-interval '20 minutes'")
+      modelFailure=mode
+      const beforeCalls:number=modelCalls
+      const result=await runWatch("synthetic","manual")
+      assert.equal(modelCalls,beforeCalls+1,"Do not automatically retry paid generations")
+      assert.equal(result.run?.status,"partial")
+      assert.equal(result.run?.done,0)
+      assert.equal(result.run?.failed,1)
+      assert.equal(result.quoted?.[0].communicationReview?.reviewedAt,"")
+      assert.equal(dailyCalls(result.items).length,0)
+      assert.ok(result.coverage.includes(`1 record(s): ${errors[mode]}`))
+      assert.ok(!JSON.stringify(result).includes(privateError))
+      const records=await db.query<{error:string}>("select error from sales_watch_queue where run_id=$1",[result.run?.id])
+      assert.equal(records.rows[0].error,errors[mode])
+    }
+    modelFailure="none"
+    const recovered=await runWatch("synthetic","manual")
+    assert.equal(recovered.run?.done,1)
+    assert.equal(recovered.run?.failed,0)
+    assert.deepEqual(recovered.run?.errors,[])
+    assert.ok(recovered.quoted?.[0].communicationReview?.reviewedAt)
   } finally {
     globalThis.fetch=originalFetch
     delete globalThis.__sql

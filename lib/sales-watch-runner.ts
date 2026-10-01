@@ -7,7 +7,7 @@ import { discoverTargets, watchContext, type Target } from "@/lib/sales-watch-so
 import { WATCH_SYSTEM, QUOTE_SYSTEM, verifiedSignals, routeFor } from "@/lib/sales-watch-analysis"
 import { pacificDate, type WatchItem, type PipelineRecord } from "@/lib/sales-watch"
 import { REVIEW_LABELS } from "@/lib/sales-watch-policy"
-import { readWatch } from "@/lib/sales-watch-store"
+import { readWatch, readWatchErrors, readWatchJson } from "@/lib/sales-watch-store"
 
 // Entire feature is off until migration + controlled canary + explicit activation.
 // Lock lasts longer than the route's 300s execution limit; expired leases recover.
@@ -56,13 +56,13 @@ export async function runWatch(token: string, trigger: "nightly" | "manual") {
       await sql.begin(async tx => {
         for(const row of discovery.inventory) {
           await tx`insert into sales_watch_inventory(run_id,deal_id,kind,payload)
-            values(${run.id},${row.id},${row.inventoryKind!},${JSON.stringify(row)}::jsonb) on conflict(run_id,deal_id) do update set payload=excluded.payload`
+            values(${run.id},${row.id},${row.inventoryKind!},${tx.json(row)}) on conflict(run_id,deal_id) do update set payload=excluded.payload`
         }
         for (const [key,t] of targets) {
           await tx`insert into sales_watch_queue(run_id,subject_key,subject_type,subject_id)
             values(${run.id},${key},${t.type},${t.id}) on conflict do nothing`
         }
-        await tx`update sales_watch_runs set discovery_complete=true, errors=${JSON.stringify(discovery.coverage)}::jsonb where id=${run.id}`
+        await tx`update sales_watch_runs set discovery_complete=true, errors=${tx.json(discovery.coverage)} where id=${run.id}`
       })
     }
     const { model } = pickAnalysisModel()
@@ -80,7 +80,7 @@ export async function runWatch(token: string, trigger: "nightly" | "manual") {
       await sql`update sales_watch_queue set attempts=attempts+1 where run_id=${run.id} and subject_key=${q.subject_key}`
       try {
         const [inventoryRow]=q.subject_type==="deals"?await sql`select payload from sales_watch_inventory where run_id=${run.id} and deal_id=${q.subject_id}`:[]
-        const ctx = await watchContext(token, { type:q.subject_type, id:q.subject_id }, Math.min(deadline-45000,Date.now()+70000),inventoryRow?.payload as PipelineRecord|undefined)
+        const ctx = await watchContext(token, { type:q.subject_type, id:q.subject_id }, Math.min(deadline-45000,Date.now()+70000),inventoryRow ? readWatchJson<PipelineRecord>(inventoryRow.payload) : undefined)
         if (ctx.excluded) {
           await sql`delete from sales_watch_inventory where run_id=${run.id} and deal_id=${q.subject_id}`
           await sql`update sales_watch_items set payload=jsonb_set(payload,'{callEligible}','false') where subject_key=${q.subject_key}`
@@ -115,7 +115,7 @@ export async function runWatch(token: string, trigger: "nightly" | "manual") {
               reviewedAt:new Date().toISOString(),coverage:ctx.coverage.join(" ") || "Readable HubSpot-logged history reviewed. Unlogged channels and audio are not covered.",
               evidence:r.evidence.map(e=>({...ctx.evidence.find(s=>s.id===e.id)!,quote:e.quote,association:ctx.evidence.find(s=>s.id===e.id)?.association||"CRM record context"})),
             }
-            await tx`update sales_watch_inventory set payload=${JSON.stringify(ctx.inventory)}::jsonb,analyzed_at=now()
+            await tx`update sales_watch_inventory set payload=${tx.json(ctx.inventory)},analyzed_at=now()
               where run_id=${run.id} and deal_id=${q.subject_id}`
           }
           for (const signal of parsed.signals) {
@@ -139,7 +139,7 @@ export async function runWatch(token: string, trigger: "nightly" | "manual") {
               callEligible:!doNotCall && (signal.stream==="service" || (!ctx.closed && parsed.outreachDecision==="now")),
             }
             // Stable evidence keeps resolved/snoozed state. New evidence gets a new item.
-            await tx`insert into sales_watch_items(id,subject_key,payload) values(${id},${q.subject_key},${JSON.stringify(item)}::jsonb)
+            await tx`insert into sales_watch_items(id,subject_key,payload) values(${id},${q.subject_key},${tx.json(item)})
               on conflict(id) do update set payload=excluded.payload, subject_key=excluded.subject_key, updated_at=now()`
           }
           // Never auto-resolve an old promise just because a model omitted it.
@@ -159,9 +159,10 @@ export async function runWatch(token: string, trigger: "nightly" | "manual") {
     const [counts] = await sql`select count(*) filter(where status!='done')::int as remaining,
       count(*) filter(where error is not null)::int as gaps from sales_watch_queue where run_id=${run.id}`
     const [meta] = await sql`select errors from sales_watch_runs where id=${run.id}`
-    const complete = counts.remaining===0 && counts.gaps===0 && meta.errors.length===0
+    const errors = readWatchErrors(meta.errors)
+    const complete = counts.remaining===0 && counts.gaps===0 && errors.length===0
     await sql`update sales_watch_runs set status=${complete ? "complete" : "partial"},
-      finished_at=now(), errors=${JSON.stringify(meta.errors)}::jsonb where id=${run.id}`
+      finished_at=now(), errors=${sql.json(errors)} where id=${run.id}`
     return { busy:false, ...(await readWatch()) }
   } catch {
     if (runId) await sql`update sales_watch_runs set status='failed',finished_at=now(),

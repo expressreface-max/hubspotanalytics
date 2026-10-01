@@ -2,11 +2,13 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import { PGlite } from "@electric-sql/pglite"
+import postgres from "postgres"
 
 // Runs the actual source -> model validator -> runner -> store path against
 // synthetic HTTP responses and an embedded PostgreSQL engine. Network is blocked.
 test("live runner persists quote inventories, suppresses fulfilled calls and retains no-call preferences",async()=>{
   const db=new PGlite()
+  const driver=postgres("postgres://synthetic:synthetic@invalid.invalid/test")
   const originalFetch=globalThis.fetch
   const env={...process.env}
   let decision:"now"|"wait"|"no_contact"="now"
@@ -21,13 +23,15 @@ test("live runner persists quote inventories, suppresses fulfilled calls and ret
         if(i<values.length) {
           const v=values[i]
           if(v?.list)text+="("+v.list.map((x:any)=>{params.push(x);return `$${params.length}`}).join(",")+")"
-          else {params.push(v);text+=`$${params.length}`}
+          else {params.push(v?.type===3802?v.value:v);text+=`$${params.length}`}
         }
       }
-      return (await conn.query(text,params)).rows
+      // PGlite otherwise treats serialized JSON strings differently from postgres.js.
+      return (await conn.query(text,params,{serializers:driver.options.serializers})).rows
     }
     // postgres.js sql(array) is synchronous and constructs an IN-list helper.
     const sql:any=(strings:any,...values:any[])=>!("raw" in strings)?{list:strings}:tag(strings,...values)
+    sql.json=driver.json
     sql.begin=(fn:any)=>conn.transaction((tx:any)=>fn(adapter(tx)))
     return sql
   }
@@ -78,6 +82,10 @@ test("live runner persists quote inventories, suppresses fulfilled calls and ret
     }
     const {runWatch}=await import("../lib/sales-watch-runner")
     const {dailyCalls}=await import("../lib/sales-watch")
+    const {readWatch,readWatchErrors}=await import("../lib/sales-watch-store")
+    assert.throws(()=>readWatchErrors(null),/Invalid stored/)
+    assert.throws(()=>readWatchErrors({unexpected:true}),/Invalid stored/)
+    assert.throws(()=>readWatchErrors([42]),/Invalid stored/)
     const first=await runWatch("synthetic","manual")
     assert.equal(first.run?.status,"complete")
     assert.equal(first.quoted?.length,1)
@@ -85,6 +93,10 @@ test("live runner persists quote inventories, suppresses fulfilled calls and ret
     assert.equal(first.quoted?.[0].contacts.length,1)
     assert.equal(dailyCalls(first.items).length,1)
     assert.equal(first.items[0].owner,"Inside sales")
+    assert.deepEqual(first.run?.errors,[])
+    assert.deepEqual((await db.query("select jsonb_typeof(payload) as type from sales_watch_inventory")).rows,[{type:"object"}])
+    assert.deepEqual((await db.query("select jsonb_typeof(payload) as type from sales_watch_items")).rows,[{type:"object"}])
+    assert.deepEqual((await db.query("select jsonb_typeof(errors) as type from sales_watch_runs")).rows,[{type:"array"}])
     // A later fulfilled promise/hold keeps the old finding for disposition,
     // but it must no longer be recommended as an automatic call.
     await db.exec("update sales_watch_runs set started_at=now()-interval '20 minutes'")
@@ -113,16 +125,32 @@ test("live runner persists quote inventories, suppresses fulfilled calls and ret
     assert.equal(partial.run?.status,"partial")
     assert.equal(partial.run?.done,1);assert.equal(partial.run?.total,2)
     assert.equal(partial.quoted?.filter(q=>q.communicationReview?.reviewedAt).length,1)
+    // Recreate the canary's string payloads and repeatedly encoded warning array.
+    await db.query("update sales_watch_inventory set payload=to_jsonb(payload::text) where run_id=$1",[partial.run?.id])
+    const warnings=["tickets: history unavailable; coverage is incomplete."]
+    await db.query("update sales_watch_runs set errors=to_jsonb(to_jsonb($1::text)::text) where id=$2",[JSON.stringify(warnings),partial.run?.id])
+    const legacy=await readWatch()
+    assert.deepEqual(legacy.run?.errors,warnings)
+    assert.ok(legacy.coverage.includes(warnings[0]))
+    assert.equal(legacy.coverage.some(message=>message.length===1),false)
+    assert.equal(legacy.quoted?.length,2)
+    assert.ok(legacy.quoted?.every(row=>row.name==="Synthetic customer project"))
+    await db.query("update sales_watch_runs set errors=to_jsonb('[]'::text) where id=$1",[partial.run?.id])
     const resumed=await runWatch("synthetic","manual")
     assert.equal(resumed.run?.id,partial.run?.id)
     assert.equal(resumed.run?.status,"complete")
     assert.equal(resumed.run?.done,2)
+    assert.deepEqual(resumed.run?.errors,[])
+    assert.equal(resumed.quoted?.filter(q=>q.communicationReview?.reviewedAt).length,2)
+    assert.deepEqual((await db.query("select jsonb_typeof(errors) as type from sales_watch_runs where id=$1",[partial.run?.id])).rows,[{type:"array"}])
+    assert.deepEqual((await db.query("select jsonb_typeof(payload) as type from sales_watch_inventory where run_id=$1 and deal_id='32'",[partial.run?.id])).rows,[{type:"object"}])
     assert.equal(modelCalls,6)
   } finally {
     globalThis.fetch=originalFetch
     delete globalThis.__sql
     for(const key of Object.keys(process.env))if(!(key in env))delete process.env[key]
     Object.assign(process.env,env)
+    await driver.end()
     await db.close()
   }
 })

@@ -53,6 +53,9 @@ If only a day is promised use the END of that local day, not UTC midnight. If am
 Urgent means immediate customer harm, repeated unaddressed dissatisfaction, or a seriously overdue promise, not simply a large deal amount.
 If evidence is incomplete, lower confidence and explicitly recommend human review, not a conclusion of inactivity.
 Provide actionable, concise text. All evidence quotes must be literal contiguous excerpts from the supplied source text.
+Use short excerpts (12–160 characters) copied exactly, including punctuation, capitalization and whitespace; never join separated phrases or add ellipses. Use at most three decisive sources per finding and avoid repeating the same issue.
+Do not output close_lost when closed is true, target.type is not deals, or coverage is nonempty; use a review-stream finding to request verification instead.
+Keep the response concise enough to finish every JSON field. Optional fields must be omitted when absent, not null.
 Return an empty signals array when no evidence-backed action or noteworthy feedback exists. Do not pad the result.`
 
 export const QUOTE_SYSTEM = `
@@ -73,15 +76,17 @@ Quoted legacy records require verification of current project relevance, not aut
 Every timing claim must be supported; a proposed cadence must be explicitly marked as a recommendation.
 `
 
+export class WatchValidationError extends Error {}
+
 export function verifiedSignals(raw: unknown, ctx: WatchContext): z.infer<typeof analysisSchema> {
   const parsed = analysisSchema.parse(raw)
-  if(ctx.inventory?.inventoryKind==="quoted" && !parsed.quoteReview)throw new Error("Missing quote communication assessment")
+  if(ctx.inventory?.inventoryKind==="quoted" && !parsed.quoteReview)throw new WatchValidationError("Model omitted the required quote communication review; no assessment was saved.")
   if(parsed.quoteReview) {
     const r=parsed.quoteReview
     for(const e of r.evidence) {
-      if(!ctx.evidence.some(s=>s.id===e.id && s.quote.includes(e.quote)))throw new Error("Quote evidence does not match source")
+      if(!ctx.evidence.some(s=>s.id===e.id && s.quote.includes(e.quote)))throw new WatchValidationError("Model quote evidence did not match the source verbatim; no assessment was saved.")
     }
-    if(r.decision!=="review" && !r.evidence.length)throw new Error("Quote decision requires evidence")
+    if(r.decision!=="review" && !r.evidence.length)throw new WatchValidationError("Model quote decision had no supporting evidence; no assessment was saved.")
     if(r.decision==="no_contact")parsed.doNotCall=true
     if(ctx.coverage.length) {
       r.confidence="low"
@@ -93,10 +98,10 @@ export function verifiedSignals(raw: unknown, ctx: WatchContext): z.infer<typeof
   for (const signal of parsed.signals) {
     for (const e of signal.evidence) {
       const source = ctx.evidence.find(s => s.id === e.id)
-      if (!source || !source.quote.includes(e.quote)) throw new Error("Analysis evidence did not match a readable source; review required.")
+      if (!source || !source.quote.includes(e.quote)) throw new WatchValidationError("Model finding evidence did not match the source verbatim; no assessment was saved.")
     }
     if (signal.kind === "close_lost" && (ctx.closed || ctx.target.type !== "deals" || ctx.coverage.length > 0)) {
-      throw new Error("Closed-lost recommendation blocked for closed/non-deal/incomplete context.")
+      throw new WatchValidationError("Closed-lost recommendation blocked for closed/non-deal/incomplete context; no assessment was saved.")
     }
     if (ctx.coverage.length > 0) signal.confidence = "low"
   }

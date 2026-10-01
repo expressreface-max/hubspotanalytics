@@ -3,6 +3,11 @@ import { sql } from "@/lib/db"
 import { triage, itemStream, type WatchData, type WatchItem, type WatchRun, type PipelineRecord } from "@/lib/sales-watch"
 import { eligibleForCall } from "@/lib/sales-watch-policy"
 
+export function watchReadOnly(): boolean {
+  // Preview and local development share the production database in this project.
+  return process.env.VERCEL_ENV !== "production"
+}
+
 export function readWatchJson<T extends object>(value: unknown): T {
   // The initial canary pre-stringified JSON before postgres.js serialized it again.
   // Run errors could gain another encoding layer on each continuation.
@@ -63,6 +68,7 @@ export async function readWatch(): Promise<WatchData> {
     }),
     run, lastCompleteAt: last?.at ? new Date(last.at).toISOString() : null,
     enabled: process.env.SALES_WATCH_ENABLED === "true",
+    readOnly: watchReadOnly(),
     inventoryAt:inventoryRun?new Date(inventoryRun.started_at).toISOString():null,
     ...(inventoryRun?{
       quoted:inventory.filter(r=>r.kind==="quoted").map(r=>readWatchJson<PipelineRecord>(r.payload)),
@@ -82,6 +88,7 @@ export async function readWatch(): Promise<WatchData> {
 }
 
 export async function applyWatchAction(id: string, action: "resolve" | "snooze" | "reopen", note: string, actor: string, until?: string) {
+  if (watchReadOnly()) throw new Error("Sales Watch is read-only outside production.")
   if (note.trim().length < 5) throw new Error("Add a meaningful disposition note (at least 5 characters).")
   return sql.begin(async tx => {
     const [row] = await tx`select payload from sales_watch_items where id = ${id} for update`

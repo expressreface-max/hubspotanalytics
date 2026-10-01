@@ -3,7 +3,7 @@ import { cookies } from "next/headers"
 import { z } from "zod"
 import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth"
 import { getActiveToken } from "@/lib/token-store"
-import { readWatch, applyWatchAction } from "@/lib/sales-watch-store"
+import { readWatch, applyWatchAction, watchReadOnly } from "@/lib/sales-watch-store"
 import { runWatch } from "@/lib/sales-watch-runner"
 
 export const dynamic = "force-dynamic"
@@ -41,6 +41,7 @@ export async function POST(req: Request) {
   if (!sameOrigin) return NextResponse.json({error:"Same-origin request required"},{status:403})
   const body = bodySchema.safeParse(await req.json().catch(()=>null))
   if (!body.success) return NextResponse.json({error:"Invalid request or confirmation missing"},{status:400})
+  if (watchReadOnly()) return NextResponse.json({error:"This preview is read-only. Run analysis and save dispositions on the production Sales Manager page."},{status:403})
   try {
     if (body.data.action === "refresh") {
       const token = getActiveToken()

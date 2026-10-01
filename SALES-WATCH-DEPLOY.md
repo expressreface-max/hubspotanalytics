@@ -16,7 +16,7 @@ Run `migrations/sales_watch.sql` against the analytics app's existing Postgres d
 
 The SQL creates eight isolated `sales_watch_*` tables and indexes. It is repeatable and does not alter existing analytics tables or HubSpot data. All tables have RLS enabled and access revoked from Supabase's `anon` and `authenticated` roles when those roles exist. Use the existing privileged server-side database connection, not a browser-facing key.
 
-Do not expose connection strings or tokens in client variables, screenshots, source control, or this document. A preview should use a separate database if it will exercise real refresh or disposition writes; otherwise leave the feature disabled.
+Do not expose connection strings or tokens in client variables, screenshots, source control, or this document. Sales Watch writes now require `VERCEL_ENV=production` in addition to activation. Preview and local development can read saved analysis, but refresh, cron execution and dispositions cannot mutate the shared database. Automated runtime tests set the production flag only against synthetic HTTP and embedded PostgreSQL; never set it locally against the production database to bypass this guard.
 
 ## Vercel environment
 
@@ -44,6 +44,8 @@ The new cron is `/api/cron/sales-watch`, scheduled `*/10 10-13 * * *`: every ten
 The Vercel project must support that frequency and the route's 300-second maximum duration. Verify the project's cron configuration and limits before promoting; the code alone does not prove the scheduler is active.
 
 Each invocation resumes the oldest unfinished run under a six-minute database lease. Complete discovery saves the entire inventory and queue in one transaction. Prior snapshots remain in the database; deals that moved out of tracked stages do not remain in a newly discovered inventory. Inventory rows begin with an explicit pending review rather than a fabricated assessment.
+
+Gemini assessments use native schema-constrained JSON, followed by unchanged literal-source and safety validation. Unsupported evidence is rejected, not silently accepted. Quoted/pre-quote/service inventory reviews, including retries, are prioritized ahead of the general background queue so a failed quote does not wait behind thousands of untouched contacts and deals.
 
 Each subject gets at most three attempts in a run. Runs with failed reads, partial channel coverage or exhausted retries remain visibly partial. A new run can retry those records once there is no resumable prior work. A manual refresh resumes pending work; starting a new full run is limited to once per fifteen minutes. Large backlogs can need multiple nightly windows or manual continuations; measure throughput rather than assuming one invocation reviews the whole account.
 

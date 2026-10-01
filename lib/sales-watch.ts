@@ -40,7 +40,7 @@ export type WatchRun = {
 }
 export type WatchData = {
   items: WatchItem[]; run: WatchRun | null; lastCompleteAt: string | null
-  enabled: boolean; coverage: string[]
+  enabled: boolean; coverage: string[]; readOnly?: boolean; busy?: boolean
   snapshotAt?: string; quoted?: PipelineRecord[]; consultations?: PipelineRecord[]
   serviceInventory?: PipelineRecord[]; stats?: Record<string, number>
   inventoryAt?: string | null

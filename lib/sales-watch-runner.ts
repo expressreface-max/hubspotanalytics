@@ -1,34 +1,41 @@
 import "server-only"
 import { createHash, randomUUID } from "node:crypto"
-import { generateText } from "ai"
+import { generateText, NoObjectGeneratedError, Output } from "ai"
 import { sql } from "@/lib/db"
 import { pickAnalysisModel } from "@/lib/ai-model"
 import { discoverTargets, watchContext, type Target, type WatchContext } from "@/lib/sales-watch-source"
-import { WATCH_SYSTEM, QUOTE_SYSTEM, verifiedSignals, routeFor } from "@/lib/sales-watch-analysis"
+import { analysisSchema, WATCH_SYSTEM, QUOTE_SYSTEM, verifiedSignals, routeFor, WatchValidationError } from "@/lib/sales-watch-analysis"
 import { pacificDate, type WatchItem, type PipelineRecord } from "@/lib/sales-watch"
 import { REVIEW_LABELS } from "@/lib/sales-watch-policy"
-import { readWatch, readWatchErrors, readWatchJson } from "@/lib/sales-watch-store"
+import { readWatch, readWatchErrors, readWatchJson, watchReadOnly } from "@/lib/sales-watch-store"
 
 class WatchAnalysisError extends Error {}
 
 export async function analyzeWatchContext(ctx: WatchContext, selection = pickAnalysisModel()) {
   let failure = "Model request failed; check provider access and quota. No assessment was saved."
   try {
-    const { text, finishReason } = await generateText({
+    const result = await generateText({
       model: selection.model, system: WATCH_SYSTEM + QUOTE_SYSTEM,
+      ...(selection.isPaid ? { output: Output.object({ schema: analysisSchema }) } : {}),
       prompt: JSON.stringify({ now: new Date().toISOString(), timezone: "America/Los_Angeles", ...ctx }),
       // Gemini's default thinking can consume the output cap before finishing JSON.
       providerOptions: selection.isPaid ? { google: { thinkingConfig: { thinkingBudget: 1024, includeThoughts: false } } } : undefined,
       maxOutputTokens: 6500, maxRetries: 0, abortSignal: AbortSignal.timeout(40000),
     })
-    if (finishReason === "length") throw new WatchAnalysisError("Model response exceeded the output limit; no assessment was saved.")
-    if (finishReason !== "stop") throw new WatchAnalysisError("Model did not finish an assessment; review provider availability and content restrictions.")
+    if (result.finishReason === "length") throw new WatchAnalysisError("Model response exceeded the output limit; no assessment was saved.")
+    if (result.finishReason !== "stop") throw new WatchAnalysisError("Model did not finish an assessment; review provider availability and content restrictions.")
     failure = "Model returned incomplete or invalid JSON; no assessment was saved."
-    const raw = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""))
-    failure = "Model assessment failed schema or literal-evidence checks; no assessment was saved."
+    const raw = selection.isPaid ? result.output : JSON.parse(result.text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""))
+    failure = "Model assessment failed schema checks; no assessment was saved."
     return verifiedSignals(raw, ctx)
   } catch (error) {
     if (error instanceof WatchAnalysisError) throw error
+    if (error instanceof WatchValidationError) throw new WatchAnalysisError(error.message)
+    if (NoObjectGeneratedError.isInstance(error)) {
+      throw new WatchAnalysisError(error.finishReason === "length"
+        ? "Model response exceeded the output limit; no assessment was saved."
+        : "Model returned incomplete or invalid structured output; no assessment was saved.")
+    }
     if (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name)) {
       throw new WatchAnalysisError("Model request timed out; no assessment was saved.")
     }
@@ -39,6 +46,7 @@ export async function analyzeWatchContext(ctx: WatchContext, selection = pickAna
 // Entire feature is off until migration + controlled canary + explicit activation.
 // Lock lasts longer than the route's 300s execution limit; expired leases recover.
 export async function runWatch(token: string, trigger: "nightly" | "manual") {
+  if (watchReadOnly()) throw new Error("Sales Watch is read-only outside production.")
   if (process.env.SALES_WATCH_ENABLED !== "true") throw new Error("Sales Watch is not activated. Complete rollout checks first.")
   const holder = randomUUID()
   const acquired = await sql`insert into sales_watch_lock (name,holder,expires_at)
@@ -99,8 +107,9 @@ export async function runWatch(token: string, trigger: "nightly" | "manual") {
     if (!Number.isInteger(maxBatch) || maxBatch < 1 || maxBatch > 100) throw new Error("Invalid SALES_WATCH_BATCH_SIZE (1–100).")
     let available = maxBatch
     const pending = await sql`select * from sales_watch_queue where run_id=${run.id}
-      and status!='done' and attempts<3 order by attempts,
-      case when exists(select 1 from sales_watch_inventory i where i.run_id=${run.id} and 'deals:'||i.deal_id=sales_watch_queue.subject_key) then 0 else 1 end,subject_key`
+      and status!='done' and attempts<3 order by
+      case when exists(select 1 from sales_watch_inventory i where i.run_id=${run.id} and 'deals:'||i.deal_id=sales_watch_queue.subject_key) then 0 else 1 end,
+      attempts,subject_key limit ${maxBatch}`
     for (const q of pending) {
       if (Date.now() > deadline - 50000 || available <= 0) break
       available--

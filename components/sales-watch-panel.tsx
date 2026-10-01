@@ -54,7 +54,9 @@ export function SalesWatchPanel({initialData,preview=false,onRefresh,onAction}:P
         if(!res.ok)throw new Error(body.error || "Refresh failed")
         next=body
       }
-      setData(next);setNotice(preview?"Sample refresh completed. No CRM or AI calls were made.":"Run status updated. Pending work remains visible until complete.")
+      setData(next)
+      const reviewed=Math.max(0,(next.run?.done ?? 0)-(data?.run?.id===next.run?.id ? data?.run?.done ?? 0 : 0))
+      setNotice(preview?"Sample refresh completed. No CRM or AI calls were made.":next.busy?"Analysis is already running. Progress updates automatically; no duplicate run was started.":`Reviewed ${reviewed} additional records. ${Math.max(0,(next.run?.total ?? 0)-(next.run?.done ?? 0))} still need review. Refresh resumes the queue without restarting completed reviews.`)
     } catch(e) {setError(e instanceof Error?e.message:"Refresh failed")}
     finally {setBusy(false)}
   }
@@ -96,13 +98,15 @@ export function SalesWatchPanel({initialData,preview=false,onRefresh,onAction}:P
     {preview && <div className="sw-preview"><strong>{snapshot?"REAL HUBSPOT DATA · READ-ONLY REPORT":"PREVIEW · SAMPLE DATA"}</strong><span>{snapshot?`Extracted ${date(data.snapshotAt!)} · Not a live feed`:"No live CRM changes or nightly jobs enabled"}</span></div>}
     <header className="sw-header">
       <div><div className="sw-eyebrow">DAILY ACTIONS / CUSTOMER CARE</div><h2>Inside sales watch</h2><p>Know who needs a call, what we promised, and where to step in.</p></div>
-      <button className="sw-primary" title={snapshot?"Live refresh requires the approved production integration. This is a read-only report.":undefined} disabled={snapshot || busy || !data.enabled} onClick={()=>setRefreshConfirm(!refreshConfirm)}>{snapshot?"Live refresh not activated":busy?"Refreshing…":"Refresh analysis"}</button>
+      <button className="sw-primary" title={data.readOnly?"Use the production Sales Manager page to run analysis. Preview cannot write to the shared database.":snapshot?"Live refresh requires the approved production integration. This is a read-only report.":!data.enabled?"Sales Watch is not activated for this deployment.":undefined} disabled={snapshot || data.readOnly || busy || !data.enabled} onClick={()=>setRefreshConfirm(!refreshConfirm)}>{data.readOnly?"Preview: read-only":snapshot?"Live refresh not activated":busy?"Refreshing…":"Refresh analysis"}</button>
     </header>
     {refreshConfirm && <div className="sw-confirm" role="region" aria-label="Confirm refresh">
       <strong>{preview?"Refresh sample analysis?":"Run or resume customer analysis now?"}</strong>
       <p>{preview?"This tests the refresh workflow only. No paid calls or customer data are involved.":"This reads CRM communications and uses the configured AI model. It resumes unfinished work, obeys the configured analysis limit, and does not send messages or change deal stages."}</p>
       <button className="sw-primary" onClick={refresh}>Confirm refresh</button><button onClick={()=>setRefreshConfirm(false)}>Cancel</button>
     </div>}
+    {data.readOnly && <p className="sw-notice">Saved production analysis is visible here. Run refreshes and save dispositions on the production Sales Manager page; this preview cannot change shared data.</p>}
+    {busy && <p className="sw-notice" role="status">Reviewing a bounded batch of HubSpot records. Progress updates while the batch runs; remaining work continues in later runs.</p>}
     {error && <div className="sw-alert" role="alert">{error}</div>}
     {notice && <div className="sw-notice" role="status">{notice}</div>}
     <div className="sw-health">
@@ -157,7 +161,7 @@ export function SalesWatchPanel({initialData,preview=false,onRefresh,onAction}:P
             </div>)}
             {focus.coverage.length>0 && <div className="sw-alert">{focus.coverage.join(" ")}</div>}
             {focus.lastDisposition && <div className="sw-evidence"><h4>Last team update</h4><div>{focus.lastDisposition.action} · {date(focus.lastDisposition.at)} · {focus.lastDisposition.actor}</div><p>{focus.lastDisposition.note}</p></div>}
-            {snapshot?<div className="sw-notice">Read-only report. Record the call outcome in HubSpot; this preview cannot save dispositions or update deals.</div>:<><h4>Record the outcome</h4><p className="sw-help">Resolve the issue, not just the call attempt. Snooze unfinished follow-up with a due time.</p>
+            {snapshot || data.readOnly?<div className="sw-notice">Read-only preview. Use the production Sales Manager page to save dispositions, or record the call outcome in HubSpot.</div>:<><h4>Record the outcome</h4><p className="sw-help">Resolve the issue, not just the call attempt. Snooze unfinished follow-up with a due time.</p>
             <form onSubmit={e=>{e.preventDefault();void save(focus)}}>
               <label>Disposition<select value={action} onChange={e=>setAction(e.target.value as typeof action)}><option value="resolve">Resolve finding</option><option value="snooze">Snooze / follow up later</option><option value="reopen">Reopen finding</option></select></label>
               {action==="snooze" && <label>Next follow-up (your browser's local time)<input type="datetime-local" required value={until} onChange={e=>setUntil(e.target.value)}/></label>}

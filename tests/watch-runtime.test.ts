@@ -42,6 +42,7 @@ test("live runner persists quote inventories, suppresses fulfilled calls and ret
     globalThis.__sql=adapter(db)
     process.env.POSTGRES_URL="postgres://synthetic:synthetic@invalid.invalid/test"
     process.env.SALES_WATCH_ENABLED="true"
+    process.env.VERCEL_ENV="production"
     process.env.SALES_WATCH_BATCH_SIZE="1"
     process.env.GOOGLE_GENERATIVE_AI_API_KEY="synthetic-not-a-real-key"
     const now=()=>new Date().toISOString()
@@ -56,6 +57,8 @@ test("live runner persists quote inventories, suppresses fulfilled calls and ret
         assert.equal(request.generationConfig.thinkingConfig.thinkingBudget,1024)
         assert.equal(request.generationConfig.thinkingConfig.includeThoughts,false)
         assert.equal(request.generationConfig.maxOutputTokens,6500)
+        assert.equal(request.generationConfig.responseMimeType,"application/json")
+        assert.ok(request.generationConfig.responseJsonSchema || request.generationConfig.responseSchema)
         if(modelFailure==="provider") return new Response(JSON.stringify({error:{code:429,message:privateError,status:"RESOURCE_EXHAUSTED"}}),{status:429,headers:{"content-type":"application/json"}})
         if(modelFailure==="timeout") throw new DOMException(privateError,"TimeoutError")
         const parsed={doNotCall:decision==="no_contact",outreachDecision:decision,
@@ -158,8 +161,8 @@ test("live runner persists quote inventories, suppresses fulfilled calls and ret
     await db.exec("update sales_watch_items set status='resolved' where subject_key='deals:32'")
     const errors={
       length:"Model response exceeded the output limit; no assessment was saved.",
-      json:"Model returned incomplete or invalid JSON; no assessment was saved.",
-      evidence:"Model assessment failed schema or literal-evidence checks; no assessment was saved.",
+      json:"Model returned incomplete or invalid structured output; no assessment was saved.",
+      evidence:"Model quote evidence did not match the source verbatim; no assessment was saved.",
       provider:"Model request failed; check provider access and quota. No assessment was saved.",
       timeout:"Model request timed out; no assessment was saved.",
     } as const
@@ -185,6 +188,25 @@ test("live runner persists quote inventories, suppresses fulfilled calls and ret
     assert.equal(recovered.run?.failed,0)
     assert.deepEqual(recovered.run?.errors,[])
     assert.ok(recovered.quoted?.[0].communicationReview?.reviewedAt)
+    const {applyWatchAction}=await import("../lib/sales-watch-store")
+    const beforePreviewCalls=modelCalls
+    for (const environment of ["preview","development",""]) {
+      process.env.VERCEL_ENV=environment
+      assert.equal((await readWatch()).readOnly,true)
+      await assert.rejects(runWatch("synthetic","manual"),/read-only outside production/)
+      await assert.rejects(applyWatchAction(recovered.items[0].id,"resolve","Synthetic disposition","staff@example.invalid"),/read-only outside production/)
+    }
+    assert.equal(modelCalls,beforePreviewCalls)
+    assert.equal((await db.query("select * from sales_watch_lock")).rows.length,0)
+    process.env.VERCEL_ENV="production"
+    assert.equal((await readWatch()).readOnly,false)
+    // A failed inventory review must retry before untouched background contacts.
+    await db.query("update sales_watch_runs set status='partial' where id=$1",[recovered.run?.id])
+    await db.query("update sales_watch_queue set status='failed',attempts=1 where run_id=$1",[recovered.run?.id])
+    await db.query("insert into sales_watch_queue(run_id,subject_key,subject_type,subject_id) values($1,'contacts:1','contacts','1')",[recovered.run?.id])
+    const prioritized=await runWatch("synthetic","manual")
+    assert.equal(prioritized.run?.done,1)
+    assert.deepEqual((await db.query("select status,attempts from sales_watch_queue where run_id=$1 and subject_key='contacts:1'",[recovered.run?.id])).rows,[{status:"pending",attempts:0}])
   } finally {
     globalThis.fetch=originalFetch
     delete globalThis.__sql

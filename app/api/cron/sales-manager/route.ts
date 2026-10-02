@@ -8,11 +8,11 @@ export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
 // Nightly refresh entry point (scheduled in vercel.json). Public in middleware,
-// but gated here by CRON_SECRET when it is set. Vercel Cron automatically sends
-// `Authorization: Bearer <CRON_SECRET>`. When the secret is unset (local dev /
-// seeding) the endpoint is open so it can be triggered manually.
+// but gated here by required CRON_SECRET. Vercel automatically sends
+// Authorization: Bearer <CRON_SECRET>. A missing secret fails closed.
 export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET
+  if (!secret) return NextResponse.json({ ok: false, error: "CRON_SECRET is required." }, { status: 503 })
   if (secret) {
     const auth = req.headers.get("authorization")
     if (auth !== `Bearer ${secret}`) {

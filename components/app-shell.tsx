@@ -15,9 +15,11 @@ import {
   CalendarRange,
   GitCompareArrows,
   Gauge,
+  Headset,
   ScrollText,
   UserRound,
   Megaphone,
+  BarChart3,
   Target,
   Crosshair,
   Settings,
@@ -52,6 +54,7 @@ import { apiGet } from "@/lib/api"
 
 const NAV_ITEMS = [
   { title: "Sales Manager", href: "/sales-manager", icon: Gauge },
+  { title: "Inside Sales Watch", href: "/inside-sales-watch", icon: Headset },
   { title: "Dashboard", href: "/", icon: LayoutDashboard },
   { title: "Deals", href: "/deals", icon: Handshake },
   { title: "Contacts", href: "/contacts", icon: Users },
@@ -66,6 +69,7 @@ const NAV_ITEMS = [
   { title: "Quotes", href: "/quotes", icon: ScrollText },
   { title: "Sales Rep", href: "/sales-rep", icon: UserRound },
   { title: "Advertising", href: "/advertising", icon: Megaphone },
+  { title: "Ad Performance", href: "/ad-performance", icon: BarChart3 },
   { title: "Attribution", href: "/attribution", icon: Target },
   { title: "Territory Potential", href: "/territory-potential", icon: Crosshair },
   { title: "Settings", href: "/settings", icon: Settings },

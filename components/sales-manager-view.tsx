@@ -110,12 +110,12 @@ export function SalesManagerView() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Sales Manager"
-        description="A static summary snapshot, recomputed automatically every night at 12:01 AM Pacific."
+        description="Nightly performance snapshots, meetings, and sales pipeline summaries."
       />
 
       {updatedLabel && (
         <p className="-mt-2 text-xs text-muted-foreground">
-          Snapshot as of {updatedLabel} · updates automatically overnight
+          Performance snapshot as of {updatedLabel} · scheduled at 07:01 UTC (12:01 AM PDT / 11:01 PM PST). Analysis health is tracked on Inside Sales Watch.
         </p>
       )}
 

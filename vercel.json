@@ -1,6 +1,10 @@
 {
   "crons": [
     {
+      "path": "/api/cron/sales-watch",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/cron/sales-manager",
       "schedule": "1 7 * * *"
     },

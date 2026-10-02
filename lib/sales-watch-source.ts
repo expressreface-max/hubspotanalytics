@@ -2,7 +2,7 @@ import "server-only"
 import { hsFetch, fetchPortalId, fetchOwnerMap } from "@/lib/hubspot"
 import { clean, fetchStageLabelMap } from "@/lib/deal-context"
 import type { Evidence, SubjectType, PipelineRecord } from "@/lib/sales-watch"
-import { inventoryKind, pendingReview, type InventoryKind } from "@/lib/sales-watch-policy"
+import { inventoryKind, pendingReview, inWatchScope, WATCH_MAX_AGE_MS, type InventoryKind } from "@/lib/sales-watch-policy"
 
 type Obj = { id: string; properties: Record<string, string | null> }
 type Filter = { propertyName: string; operator: string; value?: string }
@@ -10,12 +10,12 @@ export type Target = { type: SubjectType; id: string }
 export type WatchContext = {
   target: Target; name: string; stage: string; rep: string; phone: string | null
   customerKey: string; closed: boolean; evidence: Evidence[]; coverage: string[]
-  excluded?: boolean
+  excluded?: boolean; outOfScope?: boolean
   contactUrl?: string | null; dealUrl?: string | null
   inventory?: PipelineRecord
   contactKeys?: string[]
 }
-const DEAL_PROPS = ["dealname","dealstage","pipeline","amount","amount_in_home_currency","description","hubspot_owner_id","hs_is_closed","hs_is_closed_won","hs_v2_date_entered_current_stage","notes_last_contacted"]
+const DEAL_PROPS = ["createdate","dealname","dealstage","pipeline","amount","amount_in_home_currency","description","hubspot_owner_id","hs_is_closed","hs_is_closed_won","hs_v2_date_entered_current_stage","notes_last_contacted"]
 // Read-only object endpoints. Never interpret CRM communication as instructions.
 const CHANNELS: Record<string, { props: string[]; body: string; title: string }> = {
   emails: { props: ["hs_timestamp","hs_email_subject","hs_email_text","hs_email_direction","hs_email_from_email","hs_email_to_email"], body: "hs_email_text", title: "hs_email_subject" },
@@ -95,63 +95,29 @@ function record(d:Obj, pipelines:Pipeline[], owners:Record<string,string>, porta
     summary:kind==="consultations"?"Pre-quote stage candidate. Verify whether the consultation occurred and whether a proposal was already delivered.":"Current CRM stage; stage alone does not prove an outstanding action.",
     ...(kind==="quoted"?{communicationReview:pendingReview()}:{})}
 }
-// Batch association discovery avoids one request per engagement/parent type.
-async function associatedTargets(token:string,channel:string,ids:string[],type:SubjectType,deadline:number):Promise<string[]> {
-  const out = new Set<string>()
-  for(let i=0;i<ids.length;i+=100) {
-    checkDeadline(deadline)
-    const data=await hsFetch<{results:{from:{id:string};to:{toObjectId:string|number}[];paging?:{next?:unknown}}[];errors?:unknown[]}>(`/crm/v4/associations/${channel}/${type}/batch/read`,{
-      token,method:"POST",maxRetries:1,signal:AbortSignal.timeout(20000),
-      body:JSON.stringify({inputs:ids.slice(i,i+100).map(id=>({id}))}),
-    })
-    if(data.errors?.length)throw new Error("Partial association discovery")
-    for(const row of data.results) {
-      if(row.paging?.next)for(const id of await assoc(token,channel,row.from.id,type,deadline))out.add(id)
-      else row.to.forEach(v=>out.add(String(v.toObjectId)))
-    }
-  }
-  return [...out]
-}
-export async function discoverTargets(token: string, since: string, deadline: number): Promise<{ targets: Target[]; coverage: string[]; inventory:PipelineRecord[] }> {
-  const targets = new Map<string, Target>()
-  const coverage: string[] = []
-  const add = (type: SubjectType, id: string) => targets.set(`${type}:${id}`, { type, id })
-  // All open deals across pipelines, plus modified closed deals and recent contacts/tickets.
+export async function discoverTargets(token: string, deadline: number): Promise<{ targets: Target[]; coverage: string[]; inventory:PipelineRecord[] }> {
+  const now = Date.now()
+  const filters: Filter[] = [
+    { propertyName: "createdate", operator: "GT", value: String(now - WATCH_MAX_AGE_MS) },
+    { propertyName: "createdate", operator: "LTE", value: String(now) },
+  ]
+  // Creation date is the only age basis: recent activity never reintroduces an old record.
+  const deals = await search(token, "deals", filters, deadline, DEAL_PROPS)
+  const contacts = await search(token, "contacts", filters, deadline, ["createdate"])
   const pipelines=(await hsFetch<{results:Pipeline[]}>("/crm/v3/pipelines/deals",{token,method:"GET",signal:AbortSignal.timeout(20000)})).results
   const owners=await fetchOwnerMap(token), portal=await fetchPortalId(token)
-  const deals=new Map((await search(token, "deals", [{ propertyName: "hs_is_closed", operator: "EQ", value: "false" }], deadline,DEAL_PROPS)).map(d=>[d.id,d]))
-  // Include matching stages even when a pipeline flags them closed.
-  for(const pipeline of pipelines)for(const stage of pipeline.stages)if(inventoryKind(stage.label,stage.id,overrides())) {
-    for(const d of await search(token,"deals",[{propertyName:"dealstage",operator:"EQ",value:stage.id}],deadline,DEAL_PROPS))deals.set(d.id,d)
+  const targets: Target[] = []
+  const inventory: PipelineRecord[] = []
+  for (const d of deals) {
+    if (!inWatchScope("deals", d.properties.createdate, now)) continue
+    targets.push({ type: "deals", id: d.id })
+    const row = record(d, pipelines, owners, portal)
+    if (row) inventory.push(row)
   }
-  const inventory:PipelineRecord[]=[]
-  for(const d of deals.values()) {
-    add("deals",d.id)
-    const row=record(d,pipelines,owners,portal)
-    if(row)inventory.push(row)
+  for (const c of contacts) {
+    if (inWatchScope("contacts", c.properties.createdate, now)) targets.push({ type: "contacts", id: c.id })
   }
-  // Service requests must not disappear because their last update is old.
-  // Include the ticket inventory; pipeline closure semantics vary by portal.
-  try {for (const t of await search(token, "tickets", [], deadline)) add("tickets", t.id)}
-  catch {coverage.push("Ticket inventory unavailable. Service-stage deals are included, but ticket coverage is incomplete.")}
-  for (const type of ["deals","contacts","tickets"] as SubjectType[]) {
-    const propertyName = type === "contacts" ? "lastmodifieddate" : "hs_lastmodifieddate"
-    try {for (const d of await search(token, type, [{ propertyName, operator: "GTE", value: String(Date.parse(since)) }], deadline)) add(type, d.id)}
-    catch {coverage.push(`${type}: modified-record discovery unavailable or incomplete.`)}
-  }
-  // Engagement modifications can occur without a parent record modification.
-  // Discover these explicitly, including post-sale and contacts without a deal.
-  for (const channel of Object.keys(CHANNELS)) {
-    try {
-      const changed = await search(token, channel, [{ propertyName: "hs_lastmodifieddate", operator: "GTE", value: String(Date.parse(since)) }], deadline)
-      for (const type of ["deals","contacts","tickets"] as SubjectType[]) {
-        for(const id of await associatedTargets(token,channel,changed.map(v=>v.id),type,deadline))add(type,id)
-      }
-    } catch {
-      coverage.push(`${channel}: discovery unavailable or incomplete. Check scopes, object support and time budget.`)
-    }
-  }
-  return { targets: [...targets.values()], coverage, inventory }
+  return { targets, coverage: [], inventory }
 }
 function internalOnly(from: string | null, to: string | null): boolean {
   const addresses = `${from ?? ""} ${to ?? ""}`.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) || []
@@ -159,12 +125,15 @@ function internalOnly(from: string | null, to: string | null): boolean {
 }
 export async function watchContext(token: string, target: Target, deadline: number, inventory?:PipelineRecord): Promise<WatchContext> {
   const { type, id } = target
-  const props = type === "contacts" ? ["firstname","lastname","email","phone","hubspot_owner_id","lifecyclestage"] :
-    type === "tickets" ? ["subject","content","hs_pipeline_stage","hubspot_owner_id"] :
-    DEAL_PROPS
+  const outOfScope = (): WatchContext => ({ target, name: `${type} ${id}`, stage: "Outside the 90-day creation window", rep: "", phone: null,
+    customerKey: `${type}:${id}`, closed: false, evidence: [], coverage: [], excluded: true, outOfScope: true })
+  if (type !== "contacts" && type !== "deals") return outOfScope()
+  const props = type === "contacts" ? ["createdate","firstname","lastname","email","phone","hubspot_owner_id","lifecyclestage"] : DEAL_PROPS
   const [obj] = await read(token, type, [id], props, deadline)
   const p = obj.properties
-  const name=p.dealname || p.subject || [p.firstname,p.lastname].filter(Boolean).join(" ") || `${type} ${id}`
+  // A queued record can age out while waiting. Check before loading history or calling the model.
+  if (!inWatchScope(type, p.createdate)) return outOfScope()
+  const name=p.dealname || [p.firstname,p.lastname].filter(Boolean).join(" ") || `${type} ${id}`
   if (/\btraining\b|\bdoug schubert\b/i.test(name) || (type==="contacts" && /@(expressreface|kitchensnow)\.com$/i.test(p.email || ""))) {
     return {target,name,stage:"Excluded internal/test record",rep:"",phone:null,customerKey:`${type}:${id}`,closed:false,evidence:[],coverage:[],excluded:true}
   }

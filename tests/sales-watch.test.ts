@@ -6,9 +6,22 @@ import { dailyCalls,isActive,itemStream,scoreItem,triage,pacificDate,staleWatch,
 import { verifiedSignals,routeFor } from "../lib/sales-watch-analysis"
 import { fixtureData } from "../preview/fixtures"
 import type { WatchContext } from "../lib/sales-watch-source"
-import { inventoryKind, pendingReview, eligibleForCall } from "../lib/sales-watch-policy"
+import { inventoryKind, pendingReview, eligibleForCall, inWatchScope, WATCH_MAX_AGE_MS } from "../lib/sales-watch-policy"
 
 const seed=fixtureData()
+test("watch scope uses a strict 90-day creation window for contacts and deals only",()=>{
+  const now=Date.parse("2026-10-02T12:00:00Z")
+  for (const type of ["contacts","deals"]) {
+    assert.equal(inWatchScope(type,new Date(now).toISOString(),now),true)
+    assert.equal(inWatchScope(type,new Date(now-WATCH_MAX_AGE_MS+1).toISOString(),now),true)
+    assert.equal(inWatchScope(type,String(now-86400000),now),true)
+    assert.equal(inWatchScope(type,new Date(now-WATCH_MAX_AGE_MS).toISOString(),now),false)
+    assert.equal(inWatchScope(type,new Date(now-WATCH_MAX_AGE_MS-1).toISOString(),now),false)
+    assert.equal(inWatchScope(type,new Date(now+1).toISOString(),now),false)
+    for (const invalid of [null,undefined,"","not-a-date"]) assert.equal(inWatchScope(type,invalid,now),false)
+  }
+  for (const type of ["tickets","emails","calls"]) assert.equal(inWatchScope(type,new Date(now).toISOString(),now),false)
+})
 test("nightly scans start at 00:15 Pacific in summer, winter and DST transition days",()=>{
   for (const midnight of [
     "2026-10-02T07:00:00Z", "2026-12-02T08:00:00Z",

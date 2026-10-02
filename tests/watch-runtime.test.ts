@@ -13,7 +13,8 @@ test("live runner persists quote inventories, suppresses fulfilled calls and ret
   const env={...process.env}
   let decision:"now"|"wait"|"no_contact"="now"
   let modelCalls=0,crmCalls=0
-  let twoDeals=false
+  let twoDeals=false, includeContact=false, noEligible=false, discoveryFailure=false
+  let primaryCreatedAt: string | null | undefined
   let modelFailure: "none" | "length" | "json" | "evidence" | "provider" | "timeout" = "none"
   const privateError = "synthetic-private-provider-payload-never-persist"
   const adapter=(conn:any):any=>{
@@ -75,17 +76,29 @@ test("live runner persists quote inventories, suppresses fulfilled calls and ret
       crmCalls++
       const path=new URL(url).pathname
       const request=init?.body?JSON.parse(String(init.body)):{}
-      const deal={id:"31",properties:{dealname:"Synthetic customer project",dealstage:"quoted",pipeline:"sales",amount:"12000",hubspot_owner_id:"9",hs_is_closed:"false",hs_is_closed_won:"false"}}
+      const createdate=new Date(Date.now()-30*86400000).toISOString()
+      const deal={id:"31",properties:{createdate,dealname:"Synthetic customer project",dealstage:"quoted",pipeline:"sales",amount:"12000",hubspot_owner_id:"9",hs_is_closed:"false",hs_is_closed_won:"false"}}
       if(path==="/crm/v3/pipelines/deals")return respond({results:[{id:"sales",label:"Sales",stages:[{id:"quoted",label:"Quoted"}]}]})
       if(path==="/account-info/v3/details")return respond({portalId:123})
       if(path==="/crm/v3/owners")return respond({results:[{id:"9",firstName:"Synthetic",lastName:"Rep"}]})
       if(path.endsWith("/search")) {
-        const results=path.includes("/deals/")?(twoDeals?[deal,{...deal,id:"32"}]:[deal]):[]
+        assert.ok(path.includes("/deals/") || path.includes("/contacts/"),"Never discover tickets or recently modified engagements")
+        const filters=request.filterGroups[0].filters
+        assert.deepEqual(filters.map((f:any)=>[f.propertyName,f.operator]),[["createdate","GT"],["createdate","LTE"]])
+        assert.equal(Number(filters[1].value)-Number(filters[0].value),90*86400000)
+        assert.ok(request.properties.includes("createdate"))
+        if(discoveryFailure && path.includes("/contacts/"))return new Response("Unavailable",{status:403})
+        const eligible=path.includes("/deals/")?(twoDeals?[deal,{...deal,id:"32"}]:[deal]):includeContact?[{id:"1",properties:{createdate}}]:[]
+        // Even a permissive/stale upstream response cannot bypass the local creation-date guard.
+        const invalid=[{id:"99",properties:{...deal.properties,createdate:new Date(Date.now()-91*86400000).toISOString(),hs_lastmodifieddate:now()}},
+          {id:"98",properties:{...deal.properties,createdate:null}},
+          {id:"97",properties:{...deal.properties,createdate:new Date(Date.now()+86400000).toISOString()}}]
+        const results=[...(noEligible?[]:eligible),...invalid]
         return respond({results,total:results.length})
       }
       if(path.includes("/associations/"))return respond({results:path.endsWith("/contacts")?[{toObjectId:"41"}]:path.endsWith("/calls")?[{toObjectId:"51"}]:[]})
       if(path.endsWith("/batch/read")) {
-        if(path.includes("/deals/"))return respond({results:request.inputs.map((i:any)=>({...deal,id:i.id}))})
+        if(path.includes("/deals/"))return respond({results:request.inputs.map((i:any)=>({...deal,id:i.id,properties:{...deal.properties,createdate:primaryCreatedAt===undefined?createdate:primaryCreatedAt}}))})
         if(path.includes("/contacts/"))return respond({results:[{id:"41",properties:{firstname:"Synthetic",lastname:"Customer",email:"customer@example.invalid",phone:"+15550123456"}}]})
         if(path.includes("/calls/"))return respond({results:[{id:"51",properties:{hs_timestamp:now(),hs_call_title:"Synthetic call",hs_call_body:body()}}]})
         return respond({results:(request.inputs||[]).map((i:any)=>({id:i.id,properties:{}}))})
@@ -153,10 +166,23 @@ test("live runner persists quote inventories, suppresses fulfilled calls and ret
     assert.equal(legacy.quoted?.length,2)
     assert.ok(legacy.quoted?.every(row=>row.name==="Synthetic customer project"))
     await db.query("update sales_watch_runs set errors=to_jsonb('[]'::text) where id=$1",[partial.run?.id])
+    const legacyItem={...first.items[0],id:"legacy-finding",subjectKey:"deals:99",subjectId:"99",callEligible:true}
+    await db.query("insert into sales_watch_items(id,subject_key,payload,status) values('legacy-finding','deals:99',$1,'resolved')",[JSON.stringify(legacyItem)])
+    await db.query("insert into sales_watch_actions(item_id,actor,action,note) values('legacy-finding','staff@example.invalid','resolve','Preserve this team disposition')")
+    for (const [type,id,status] of [["deals","99","pending"],["contacts","98","failed"],["tickets","97","done"]]) {
+      await db.query("insert into sales_watch_queue(run_id,subject_key,subject_type,subject_id,status,attempts,error) values($1,$2,$3,$4,$5,3,'Old scope warning')",[partial.run?.id,`${type}:${id}`,type,id,status])
+    }
+    await db.query("insert into sales_watch_inventory(run_id,deal_id,kind,payload) values($1,'99','quoted',$2)",[partial.run?.id,JSON.stringify({...first.quoted![0],id:"99"})])
     const resumed=await runWatch("synthetic","nightly",{allowNewRun:false})
     assert.equal(resumed.run?.id,partial.run?.id)
     assert.equal(resumed.run?.status,"complete")
     assert.equal(resumed.run?.done,2)
+    assert.equal(resumed.run?.total,2,"Resuming prunes old records, missing dates and tickets without restarting reviewed records")
+    assert.equal(resumed.quoted?.length,2)
+    const savedLegacy=resumed.items.find(item=>item.id==="legacy-finding")!
+    assert.equal(savedLegacy.status,"resolved")
+    assert.equal(savedLegacy.callEligible,false)
+    assert.equal(savedLegacy.lastDisposition?.note,"Preserve this team disposition")
     assert.deepEqual(resumed.run?.errors,[])
     assert.equal(resumed.quoted?.filter(q=>q.communicationReview?.reviewedAt).length,2)
     assert.deepEqual((await db.query("select jsonb_typeof(errors) as type from sales_watch_runs where id=$1",[partial.run?.id])).rows,[{type:"array"}])
@@ -206,6 +232,7 @@ test("live runner persists quote inventories, suppresses fulfilled calls and ret
     process.env.VERCEL_ENV="production"
     assert.equal((await readWatch()).readOnly,false)
     // A failed inventory review must retry before untouched background contacts.
+    includeContact=true
     await db.query("update sales_watch_runs set status='partial' where id=$1",[recovered.run?.id])
     await db.query("update sales_watch_queue set status='failed',attempts=1 where run_id=$1",[recovered.run?.id])
     await db.query("insert into sales_watch_queue(run_id,subject_key,subject_type,subject_id) values($1,'contacts:1','contacts','1')",[recovered.run?.id])
@@ -227,6 +254,35 @@ test("live runner persists quote inventories, suppresses fulfilled calls and ret
     const locked=await runWatch("synthetic","nightly")
     assert.equal(locked.busy,true)
     assert.equal(modelCalls,beforeDuplicate,"Overlapping cron invocations never process in parallel")
+    await db.exec("delete from sales_watch_lock")
+    const {watchContext}=await import("../lib/sales-watch-source")
+    for (const createdAt of [null,new Date(Date.now()-91*86400000).toISOString(),new Date(Date.now()+86400000).toISOString()]) {
+      primaryCreatedAt=createdAt
+      const beforeReads:number=crmCalls
+      const excluded=await watchContext("synthetic",{type:"deals",id:"31"},Date.now()+10000)
+      assert.equal(excluded.outOfScope,true)
+      assert.equal(crmCalls,beforeReads+1,"Aged-out records stop before reading communications")
+    }
+    const beforeTicket=crmCalls
+    assert.equal((await watchContext("synthetic",{type:"tickets",id:"97"},Date.now()+10000)).outOfScope,true)
+    assert.equal(crmCalls,beforeTicket,"Tickets are excluded without a CRM read")
+    primaryCreatedAt=undefined
+    await db.exec("update sales_watch_queue set status='pending',attempts=0 where run_id=(select id from sales_watch_runs order by started_at desc limit 1)")
+    const queueBefore=(await db.query("select subject_key from sales_watch_queue where run_id=$1 order by subject_key",[nightly.run?.id])).rows
+    discoveryFailure=true
+    await assert.rejects(runWatch("synthetic","nightly",{allowNewRun:false}),/could not complete/)
+    assert.deepEqual((await db.query("select subject_key from sales_watch_queue where run_id=$1 order by subject_key",[nightly.run?.id])).rows,queueBefore,"Failed discovery must never prune saved work")
+    assert.equal(modelCalls,beforeDuplicate)
+    discoveryFailure=false
+    noEligible=true
+    const empty=await runWatch("synthetic","nightly",{allowNewRun:false})
+    assert.equal(empty.run?.id,nightly.run?.id)
+    assert.equal(empty.run?.status,"complete")
+    assert.equal(empty.run?.total,0)
+    assert.equal(empty.quoted?.length,0)
+    assert.equal(dailyCalls(empty.items).length,0)
+    assert.equal(empty.items.find(item=>item.id==="legacy-finding")?.lastDisposition?.note,"Preserve this team disposition")
+    assert.equal(modelCalls,beforeDuplicate,"An empty eligible scope incurs no model calls")
   } finally {
     globalThis.fetch=originalFetch
     delete globalThis.__sql

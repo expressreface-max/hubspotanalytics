@@ -12,7 +12,6 @@ import { OpenQuotePipelineSection, type QuoteAnalysis } from "@/components/open-
 import { OpenQuotesSection, type OpenQuotesData } from "@/components/open-quotes-section"
 import { SalesRepYtdSection, type SalesRepYtdData } from "@/components/sales-rep-ytd-section"
 import { cn } from "@/lib/utils"
-import { SalesWatchPanel } from "@/components/sales-watch-panel"
 
 // One stored row per time window, pre-computed by the nightly job and read
 // instantly from the database (no live HubSpot calls on page load).
@@ -111,16 +110,14 @@ export function SalesManagerView() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Sales Manager"
-        description="Inside-sales follow-up, customer care, and nightly performance snapshots."
+        description="Nightly performance snapshots, meetings, and sales pipeline summaries."
       />
 
       {updatedLabel && (
         <p className="-mt-2 text-xs text-muted-foreground">
-          Performance snapshot as of {updatedLabel} · scheduled at 07:01 UTC (12:01 AM PDT / 11:01 PM PST). Analysis health is tracked separately below.
+          Performance snapshot as of {updatedLabel} · scheduled at 07:01 UTC (12:01 AM PDT / 11:01 PM PST). Analysis health is tracked on Inside Sales Watch.
         </p>
       )}
-
-      <SalesWatchPanel />
 
       <Card>
         <CardHeader>

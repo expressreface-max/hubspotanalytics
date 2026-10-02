@@ -77,8 +77,8 @@ export async function readWatch(): Promise<WatchData> {
     }:{}),
     coverage: [
       "HubSpot-logged activity only. Unlogged phone/SMS, external inboxes and audio without a logged transcript are not covered.",
-      "First-run discovery: all open deals and tickets, plus 7 days of activity, modified contacts and closed deals. Unresolved findings remain until reviewed.",
-      "Activity with no deal, contact or ticket association cannot be assigned to a customer worklist. Associated-contact communications may concern a different job.",
+      "Processing is limited to contacts and deals created less than 90 days ago. Tickets, older records and missing creation dates are excluded, even when activity is recent. Existing findings and dispositions are retained without further analysis or call recommendations outside this scope.",
+      "Activity must be associated with an eligible contact or deal. Associated-contact communications may concern a different job.",
       "Inventory follows current HubSpot stage labels or configured stage IDs. Consultation-stage candidates include unverified or future appointments; only a completed meeting is evidence of a completed visit.",
       "Call recommendations expire after 36 hours without re-analysis. No-call preferences persist; resolving a finding does not clear a customer's preference.",
       ...(run?.errors ?? []),

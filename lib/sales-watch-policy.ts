@@ -1,5 +1,12 @@
 import type { PipelineRecord, WatchItem } from "./sales-watch"
 
+export const WATCH_MAX_AGE_MS = 90 * 86400000
+export function inWatchScope(type: string, createdAt: string | null | undefined, now = Date.now()): boolean {
+  if (type !== "contacts" && type !== "deals") return false
+  const created = createdAt ? (/^\d+$/.test(createdAt) ? Number(createdAt) : Date.parse(createdAt)) : NaN
+  return Number.isFinite(created) && created > now - WATCH_MAX_AGE_MS && created <= now
+}
+
 export type InventoryKind = "quoted" | "consultations" | "service"
 // Explicit stage IDs override label matching. No customer-specific IDs or data.
 export function inventoryKind(stage: string, id: string, overrides: Partial<Record<InventoryKind, string[]>> = {}): InventoryKind | null {

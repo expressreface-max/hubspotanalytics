@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { generateText, NoObjectGeneratedError, Output } from "ai"
 import { sql } from "@/lib/db"
 import { pickAnalysisModel } from "@/lib/ai-model"
-import { discoverTargets, watchContext, type Target, type WatchContext } from "@/lib/sales-watch-source"
+import { discoverTargets, watchContext, type WatchContext } from "@/lib/sales-watch-source"
 import { analysisSchema, WATCH_SYSTEM, QUOTE_SYSTEM, verifiedSignals, routeFor, WatchValidationError } from "@/lib/sales-watch-analysis"
 import { pacificDate, type WatchItem, type PipelineRecord } from "@/lib/sales-watch"
 import { REVIEW_LABELS } from "@/lib/sales-watch-policy"
@@ -78,29 +78,27 @@ export async function runWatch(token: string, trigger: "nightly" | "manual", { a
     }
     runId = run.id
     await sql`update sales_watch_runs set status='running' where id=${run.id}`
-    if (!run.discovery_complete) {
-      const [last] = await sql`select max(started_at) as at from sales_watch_runs where status='complete'`
-      // Overlap protects modifications arriving during a previous scan.
-      const since = new Date(last?.at ? new Date(last.at).getTime() - 86400000 : Date.now() - 7 * 86400000).toISOString()
-      const discovery = await discoverTargets(token, since, deadline)
-      const existing = await sql`select distinct subject_key from sales_watch_items where status != 'resolved'`
-      const targets = new Map(discovery.targets.map(t => [`${t.type}:${t.id}`, t]))
-      for (const row of existing) {
-        const [type,id] = row.subject_key.split(":")
-        if (["deals","contacts","tickets"].includes(type) && /^\d+$/.test(id)) targets.set(row.subject_key, { type, id } as Target)
+    // Reconcile each continuation before any paid analysis, including queues created under the old scope.
+    // Discovery must fully succeed before pruning, so an API failure cannot look like an empty inventory.
+    const discovery = await discoverTargets(token, deadline)
+    const targetKeys = discovery.targets.map(t => `${t.type}:${t.id}`)
+    const inventoryIds = discovery.inventory.map(row => row.id)
+    await sql.begin(async tx => {
+      await tx`delete from sales_watch_queue where run_id=${run.id} and subject_key not in ${tx(targetKeys.length ? targetKeys : [""])}`
+      await tx`delete from sales_watch_inventory where run_id=${run.id} and deal_id not in ${tx(inventoryIds.length ? inventoryIds : [""])}`
+      // Keep saved findings and human dispositions, but stop recommending out-of-scope records for calls.
+      await tx`update sales_watch_items set payload=jsonb_set(payload,'{callEligible}','false')
+        where subject_key not in ${tx(targetKeys.length ? targetKeys : [""])} and payload->>'callEligible' is distinct from 'false'`
+      for (const row of discovery.inventory) {
+        await tx`insert into sales_watch_inventory(run_id,deal_id,kind,payload)
+          values(${run.id},${row.id},${row.inventoryKind!},${tx.json(row)}) on conflict(run_id,deal_id) do nothing`
       }
-      await sql.begin(async tx => {
-        for(const row of discovery.inventory) {
-          await tx`insert into sales_watch_inventory(run_id,deal_id,kind,payload)
-            values(${run.id},${row.id},${row.inventoryKind!},${tx.json(row)}) on conflict(run_id,deal_id) do update set payload=excluded.payload`
-        }
-        for (const [key,t] of targets) {
-          await tx`insert into sales_watch_queue(run_id,subject_key,subject_type,subject_id)
-            values(${run.id},${key},${t.type},${t.id}) on conflict do nothing`
-        }
-        await tx`update sales_watch_runs set discovery_complete=true, errors=${tx.json(discovery.coverage)} where id=${run.id}`
-      })
-    }
+      for (const t of discovery.targets) {
+        await tx`insert into sales_watch_queue(run_id,subject_key,subject_type,subject_id)
+          values(${run.id},${`${t.type}:${t.id}`},${t.type},${t.id}) on conflict do nothing`
+      }
+      await tx`update sales_watch_runs set discovery_complete=true, errors=${tx.json(discovery.coverage)} where id=${run.id}`
+    })
     const selection = pickAnalysisModel()
     // Per-invocation cap: continuations can finish the entire inventory rather
     // than becoming permanently stuck behind a cumulative attempt ceiling.
@@ -119,9 +117,10 @@ export async function runWatch(token: string, trigger: "nightly" | "manual", { a
         const [inventoryRow]=q.subject_type==="deals"?await sql`select payload from sales_watch_inventory where run_id=${run.id} and deal_id=${q.subject_id}`:[]
         const ctx = await watchContext(token, { type:q.subject_type, id:q.subject_id }, Math.min(deadline-45000,Date.now()+70000),inventoryRow ? readWatchJson<PipelineRecord>(inventoryRow.payload) : undefined)
         if (ctx.excluded) {
-          await sql`delete from sales_watch_inventory where run_id=${run.id} and deal_id=${q.subject_id}`
+          if (q.subject_type === "deals") await sql`delete from sales_watch_inventory where run_id=${run.id} and deal_id=${q.subject_id}`
           await sql`update sales_watch_items set payload=jsonb_set(payload,'{callEligible}','false') where subject_key=${q.subject_key}`
-          await sql`update sales_watch_queue set status='done',error=null where run_id=${run.id} and subject_key=${q.subject_key}`
+          if (ctx.outOfScope) await sql`delete from sales_watch_queue where run_id=${run.id} and subject_key=${q.subject_key}`
+          else await sql`update sales_watch_queue set status='done',error=null where run_id=${run.id} and subject_key=${q.subject_key}`
           continue
         }
         if (Date.now() > deadline - 45000) throw new Error("Context completed too near deadline; analysis deferred.")

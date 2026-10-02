@@ -2,13 +2,36 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import { PGlite } from "@electric-sql/pglite"
-import { dailyCalls,isActive,itemStream,scoreItem,triage,pacificDate,staleWatch } from "../lib/sales-watch"
+import { dailyCalls,isActive,itemStream,scoreItem,triage,pacificDate,staleWatch,canStartNightlyWatch } from "../lib/sales-watch"
 import { verifiedSignals,routeFor } from "../lib/sales-watch-analysis"
 import { fixtureData } from "../preview/fixtures"
 import type { WatchContext } from "../lib/sales-watch-source"
 import { inventoryKind, pendingReview, eligibleForCall } from "../lib/sales-watch-policy"
 
 const seed=fixtureData()
+test("nightly scans start at 00:15 Pacific in summer, winter and DST transition days",()=>{
+  for (const midnight of [
+    "2026-10-02T07:00:00Z", "2026-12-02T08:00:00Z",
+    "2026-03-08T08:00:00Z", "2026-03-09T07:00:00Z",
+    "2026-11-01T07:00:00Z", "2026-11-02T08:00:00Z",
+  ]) {
+    const at=Date.parse(midnight)
+    assert.equal(canStartNightlyWatch(new Date(at)),false)
+    assert.equal(canStartNightlyWatch(new Date(at+15*60000-1)),false)
+    assert.equal(canStartNightlyWatch(new Date(at+15*60000)),true)
+    assert.equal(canStartNightlyWatch(new Date(at+20*60000)),true,"A later tick recovers a missed kickoff")
+    assert.equal(canStartNightlyWatch(new Date(at+12*3600000)),true)
+  }
+})
+test("cron wakes every five minutes without changing other report schedules",async()=>{
+  const config=JSON.parse(await readFile(new URL("../vercel.json",import.meta.url),"utf8"))
+  assert.deepEqual(config.crons,[
+    {path:"/api/cron/sales-watch",schedule:"*/5 * * * *"},
+    {path:"/api/cron/sales-manager",schedule:"1 7 * * *"},
+    {path:"/api/cron/open-quotes-scan",schedule:"20 7 * * *"},
+    {path:"/api/cron/reapi-enrich",schedule:"30 7 * * *"},
+  ])
+})
 test("top ten is capped at ten but other queues retain all findings",()=>{
   const many=Array.from({length:20},(_,i)=>({...seed.items[4],id:`sales-${i}`,customerKey:`sales-${i}`}))
   assert.equal(dailyCalls(many).length,10)

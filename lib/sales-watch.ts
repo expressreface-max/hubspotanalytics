@@ -53,6 +53,15 @@ export const KIND_LABEL: Record<WatchKind, string> = {
 export function pacificDate(now = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(now)
 }
+export function canStartNightlyWatch(now = new Date()): boolean {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(now)
+  const hour = Number(parts.find(part => part.type === "hour")?.value)
+  const minute = Number(parts.find(part => part.type === "minute")?.value)
+  // Later ticks catch a missed 00:15 invocation; the database permits one nightly run per Pacific date.
+  return hour * 60 + minute >= 15
+}
 export function isActive(item: WatchItem, now = Date.now()): boolean {
   return item.status !== "resolved" && !(item.status === "snoozed" && item.snoozedUntil && Date.parse(item.snoozedUntil) > now)
 }

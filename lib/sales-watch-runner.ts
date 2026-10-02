@@ -45,7 +45,7 @@ export async function analyzeWatchContext(ctx: WatchContext, selection = pickAna
 
 // Entire feature is off until migration + controlled canary + explicit activation.
 // Lock lasts longer than the route's 300s execution limit; expired leases recover.
-export async function runWatch(token: string, trigger: "nightly" | "manual") {
+export async function runWatch(token: string, trigger: "nightly" | "manual", { allowNewRun = true } = {}) {
   if (watchReadOnly()) throw new Error("Sales Watch is read-only outside production.")
   if (process.env.SALES_WATCH_ENABLED !== "true") throw new Error("Sales Watch is not activated. Complete rollout checks first.")
   const holder = randomUUID()
@@ -63,6 +63,7 @@ export async function runWatch(token: string, trigger: "nightly" | "manual") {
         select 1 from sales_watch_queue q where q.run_id=sales_watch_runs.id and q.status != 'done' and q.attempts < 3
       )) order by started_at limit 1`
     if (!run) {
+      if (!allowNewRun) return { busy: false, ...(await readWatch()) }
       if (trigger === "nightly") {
         const [today] = await sql`select id from sales_watch_runs where day_key=${pacificDate()} and trigger='nightly'`
         if (today) return { busy: false, ...(await readWatch()) }

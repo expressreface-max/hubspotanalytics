@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/cron/sales-watch",
-      "schedule": "*/10 10-13 * * *"
+      "schedule": "*/5 * * * *"
     },
     {
       "path": "/api/cron/sales-manager",

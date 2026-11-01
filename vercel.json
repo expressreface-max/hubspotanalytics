@@ -6,7 +6,7 @@
     },
     {
       "path": "/api/cron/sales-manager",
-      "schedule": "1 7 * * *"
+      "schedule": "1 8 * * *"
     },
     {
       "path": "/api/cron/open-quotes-scan",

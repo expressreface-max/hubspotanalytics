@@ -103,6 +103,8 @@ export function SalesManagerView() {
         year: "numeric",
         hour: "numeric",
         minute: "2-digit",
+        timeZone: "America/Los_Angeles",
+        timeZoneName: "short",
       })
     : null
 
@@ -110,12 +112,12 @@ export function SalesManagerView() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Sales Manager"
-        description="Nightly performance snapshots, meetings, and sales pipeline summaries."
+        description="Nightly performance snapshots, meetings, and sales pipeline summaries. Performance matrix dates use Pacific time."
       />
 
       {updatedLabel && (
         <p className="-mt-2 text-xs text-muted-foreground">
-          Performance snapshot as of {updatedLabel} · scheduled at 07:01 UTC (12:01 AM PDT / 11:01 PM PST). Analysis health is tracked on Inside Sales Watch.
+          Performance snapshot as of {updatedLabel} · scheduled at 08:01 UTC (12:01 AM PST / 1:01 AM PDT). Analysis health is tracked on Inside Sales Watch.
         </p>
       )}
 

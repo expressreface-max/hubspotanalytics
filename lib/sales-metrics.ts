@@ -128,8 +128,9 @@ export async function computeWindowMetrics(token: string, fromMs: number, toMs: 
 // searches are what rate-limited HubSpot) and upsert each into the DB.
 export async function refreshAllPeriods(token: string): Promise<{ period: string; metrics: WindowMetrics }[]> {
   const out: { period: string; metrics: WindowMetrics }[] = []
+  const now = new Date()
   for (const { key, label } of SALES_MANAGER_PERIODS) {
-    const { dateFrom, dateTo } = resolveRange(key)
+    const { dateFrom, dateTo } = resolveRange(key, undefined, now)
     const fromMs = Date.parse(dateFrom)
     const toMs = Date.parse(dateTo)
     const m = await computeWindowMetrics(token, fromMs, toMs)
